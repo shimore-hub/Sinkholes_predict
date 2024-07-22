@@ -120,6 +120,41 @@ class build_unet(nn.Module):
         return outputs
 
 
+def train(model, loader, optimizer, loss_fn, device):
+    epoch_loss = 0.0
+
+    model.train()
+    for x, y in loader:
+        x = x.to(device, dtype=torch.float32)
+        y = y.to(device, dtype=torch.float32)
+
+        optimizer.zero_grad()
+        y_pred = model(x)
+        loss = loss_fn(y_pred, y)
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+
+    epoch_loss = epoch_loss/len(loader)
+    return epoch_loss
+
+def evaluate(model, loader, loss_fn, device):
+    epoch_loss = 0.0
+
+    model.eval()
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, dtype=torch.float32)
+            y = y.to(device, dtype=torch.float32)
+
+            y_pred = model(x)
+            loss = loss_fn(y_pred, y)
+            epoch_loss += loss.item()
+
+        epoch_loss = epoch_loss/len(loader)
+    return epoch_loss
+
+
 if __name__ == "__main__":
     x = torch.randn((2, 1, 200, 200))
     f = build_unet()
