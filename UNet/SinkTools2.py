@@ -1722,6 +1722,78 @@ def contour_circularity(in_raster_path, out_path, min_coord, min_area=0):
     save_array_as_tiff(out_mat, out_path, geotransform, projection, nodata_val=-32767)
 
 
+def normalize_array(array):
+    """Normalize the array values to the range [0, 1]."""
+    array_min = array.min()
+    array_max = array.max()
+    if array_max - array_min == 0:
+        return array  # Avoid division by zero if all values are the same
+    normalized_array = (array - array_min) / (array_max - array_min)
+    return normalized_array
+
+
+def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size_y, overlap_x=0, overlap_y=0):
+    # Open the input raster
+    raster = gdal.Open(input_raster_path)
+    if raster is None:
+        print(f"Unable to open input raster {input_raster_path}")
+        return
+
+    # Get raster information
+    raster_band = raster.GetRasterBand(1)
+    xsize = raster.RasterXSize
+    ysize = raster.RasterYSize
+    geotransform = raster.GetGeoTransform()
+    projection = raster.GetProjection()
+
+    # Calculate the number of tiles in x and y directions, considering overlap
+    x_tiles = (xsize + tile_size_x - 1) // (tile_size_x - overlap_x)
+    y_tiles = (ysize + tile_size_y - 1) // (tile_size_y - overlap_y)
+
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    for i in range(x_tiles):
+        for j in range(y_tiles):
+            # Calculate the offsets and tile size
+            x_offset = i * (tile_size_x - overlap_x)
+            y_offset = j * (tile_size_y - overlap_y)
+            x_tile_size = min(tile_size_x, xsize - x_offset)
+            y_tile_size = min(tile_size_y, ysize - y_offset)
+
+            # Ensure that the tile dimensions are positive
+            if x_tile_size <= 0 or y_tile_size <= 0:
+                continue
+
+            # Read the tile data
+            tile = raster_band.ReadAsArray(x_offset, y_offset, x_tile_size, y_tile_size)
+
+            # Normalize the tile data
+            tile = normalize_array(tile)
+
+            # Create a new raster dataset for the tile
+            driver = gdal.GetDriverByName('GTiff')
+            output_tile_path = os.path.join(output_dir, f'tile_{i}_{j}.tif')
+            tile_dataset = driver.Create(output_tile_path, x_tile_size, y_tile_size, 1, gdal.GDT_Float32)
+            tile_dataset.SetGeoTransform((
+                geotransform[0] + x_offset * geotransform[1],
+                geotransform[1],
+                0,
+                geotransform[3] + y_offset * geotransform[5],
+                0,
+                geotransform[5]
+            ))
+            tile_dataset.SetProjection(projection)
+            tile_dataset.GetRasterBand(1).WriteArray(tile)
+
+            # Save and close the tile dataset
+            tile_dataset.FlushCache()
+            tile_dataset = None
+
+    # Close the original raster
+    raster = None
+
 
 ##################### MORPHOMETRIC FEATURES ALGORITHMS ############################
 def count_ones(raster_path):
