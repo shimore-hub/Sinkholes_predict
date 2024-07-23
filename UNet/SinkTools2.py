@@ -29,6 +29,10 @@ from matplotlib import pyplot as plt
 import sys
 import subprocess
 import pyproj as Proj
+import tqdm
+import random
+import torch
+import shutil
 
 
 A = lambda z1, z2, z3, z4, z5, z6, z7, z8, z9, L: ((z1 + z3 + z7 + z9) / 4 - (z2 + z4 + z6 + z8) / 2 + z5) / (L ** 4)
@@ -1381,37 +1385,62 @@ def extract_polygon(input_shapefile, output_shapefile, polygon_index):
     new_gdf.to_file(output_shapefile, driver='ESRI Shapefile')
 
 
-def create_mask_from_shapefile(shapefile_filepath, corresponding_orthomosaic_filepath, output_file):
-    # open shapefile
-    with fiona.open(shapefile_filepath, 'r') as shapefile:
-        shapes = [feature['geometry'] for feature in shapefile]
+def create_mask_from_shapefile(shapefile_path, raster_path, output_path, nodata_value=-32767):
+    """
+    Create a mask from a shapefile and raster, saving the result to a new file with a specified nodata value.
+    """
+    # Open the raster file
+    raster = gdal.Open(raster_path)
+    geotransform = raster.GetGeoTransform()
+    projection = raster.GetProjection()
+    x_size = raster.RasterXSize
+    y_size = raster.RasterYSize
 
-    # open rasterfile
-    with rasterio.open(corresponding_orthomosaic_filepath, 'r') as src:
-        out_image, out_transform = mask(src, shapes, crop=True) # setting all pixels outside of the feature zone to zero
-        out_meta = src.meta
+    # Create the output raster
+    driver = gdal.GetDriverByName('GTiff')
+    out_raster = driver.Create(output_path, x_size, y_size, 1, gdal.GDT_Byte)
+    out_raster.SetGeoTransform(geotransform)
+    out_raster.SetProjection(projection)
 
-    out_meta.update({"driver": "GTiff",
-    "height": out_image.shape[1],
-    "width": out_image.shape[2],
-    "transform": out_transform})
+    # Create a layer from the shapefile
+    shapefile = ogr.Open(shapefile_path)
+    layer = shapefile.GetLayer()
 
-    with rasterio.open(output_file, "w", **out_meta) as dest:
-        dest.write(out_image)
+    # Rasterize the shapefile layer to the output raster
+    gdal.RasterizeLayer(out_raster, [1], layer, burn_values=[1])
+
+    # Read the mask
+    band = out_raster.GetRasterBand(1)
+    mask = band.ReadAsArray()
+
+    # Apply the nodata value to the mask
+    mask[mask == 0] = nodata_value
+    band.WriteArray(mask)
+    band.SetNoDataValue(nodata_value)
+
+    out_raster.FlushCache()
+    out_raster = None
+    shapefile = None
 
 
-def extact_rasters_by_polygons(shapefile_path, raster_path, output_folder):
-    # check if the output folder exists
+def extract_rasters_by_polygons(shapefile_path, raster_path, output_folder, nodata_value=-32767):
+    """
+    Extract rasters by polygons and save them to an output folder with a specified nodata value.
+    """
+    # Check if the output folder exists
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
+
     # Read the input shapefile
     gdf = gpd.read_file(shapefile_path)
-    # loop through the polygons
+
+    # Loop through the polygons
     for i in range(len(gdf)):
-        file_path = output_folder + str(gdf.iloc[i]['number']) + '.tif'
+        # file_path = os.path.join(output_folder, f"{gdf.iloc[i]['number']}.tif")
+        file_path = os.path.join(output_folder, f"new_file.tif")
         print(file_path)
         extract_polygon(shapefile_path, 'temp.shp', i)
-        create_mask_from_shapefile('temp.shp', raster_path, file_path)
+        create_mask_from_shapefile('temp.shp', raster_path, file_path, nodata_value)
 
     os.remove('temp.shp')
 
@@ -1793,6 +1822,116 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
 
     # Close the original raster
     raster = None
+
+
+def check_empty_rasters(raster_dir, threshold, DSM_dir=None):
+    """
+    Check if rasters in a directory are empty or not based on a threshold and organize them accordingly.
+
+    :param raster_dir: Directory containing the raster files.
+    :param threshold: Threshold value to determine if a raster is considered empty.
+    :param DSM_dir: Directory containing the corresponding DSM files (optional).
+    """
+    # Create the empty and not_empty directories for both raster and DSM directories
+    empty_dir = os.path.join(raster_dir, 'empty')
+    not_empty_dir = os.path.join(raster_dir, 'not_empty')
+
+    if DSM_dir:
+        empty_DSM_dir = os.path.join(DSM_dir, 'empty')
+        not_empty_DSM_dir = os.path.join(DSM_dir, 'not_empty')
+
+    for dir_path in [empty_dir, not_empty_dir]:
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+    if DSM_dir:
+        for dir_path in [empty_DSM_dir, not_empty_DSM_dir]:
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+    print(f'The size of the directory is: {len(os.listdir(raster_dir))}')
+
+    # Iterate over the rasters in the directory
+    for raster in tqdm.tqdm(os.listdir(raster_dir)):
+        if raster.endswith('.tif'):
+            raster_path = os.path.join(raster_dir, raster)
+            # Open the raster
+            dataset = gdal.Open(raster_path)
+            # Get the band
+            band = dataset.GetRasterBand(1)
+            # Read the array
+            array = band.ReadAsArray()
+            # Count the number of non-zero pixels
+            non_zero_count = (array != 0).sum()
+            # Determine the destination based on the non-zero count
+            if non_zero_count < threshold:
+                os.rename(raster_path, os.path.join(empty_dir, raster))
+                if DSM_dir:
+                    dsm_path = os.path.join(DSM_dir, raster)
+                    if os.path.exists(dsm_path):
+                        os.rename(dsm_path, os.path.join(empty_DSM_dir, raster))
+            else:
+                os.rename(raster_path, os.path.join(not_empty_dir, raster))
+                if DSM_dir:
+                    dsm_path = os.path.join(DSM_dir, raster)
+                    if os.path.exists(dsm_path):
+                        os.rename(dsm_path, os.path.join(not_empty_DSM_dir, raster))
+
+
+
+def split_data_and_masks(data_folder, mask_folder, train_ratio=0.8):
+    """
+    Split data and mask files into training and testing sets.
+    :param data_folder:
+    :param mask_folder:
+    :param train_ratio:
+    :return:
+    """
+    # Create train and test directories
+    train_data_dir = os.path.join(os.path.dirname(data_folder), 'train_data')
+    test_data_dir = os.path.join(os.path.dirname(data_folder), 'test_data')
+    train_mask_dir = os.path.join(os.path.dirname(mask_folder), 'train_masks')
+    test_mask_dir = os.path.join(os.path.dirname(mask_folder), 'test_masks')
+
+    for dir_path in [train_data_dir, test_data_dir, train_mask_dir, test_mask_dir]:
+        os.makedirs(dir_path, exist_ok=True)
+
+    # Get list of files
+    data_files = os.listdir(data_folder)
+    mask_files = os.listdir(mask_folder)
+
+    # Determine number of files for training
+    num_train = int(len(data_files) * train_ratio)
+
+    # Shuffle indices
+    indices = list(range(len(data_files)))
+    random.shuffle(indices)
+
+    # Split data
+    train_data_files = [data_files[i] for i in indices[:num_train]]
+    test_data_files = [data_files[i] for i in indices[num_train:]]
+
+    # Copy data files to train and test directories
+    for file_name in train_data_files:
+        shutil.copy(os.path.join(data_folder, file_name), os.path.join(train_data_dir, file_name))
+    for file_name in test_data_files:
+        shutil.copy(os.path.join(data_folder, file_name), os.path.join(test_data_dir, file_name))
+
+    # Copy mask files to train and test directories
+    for file_name in train_data_files:
+        if file_name.endswith('.tif'):
+            print(file_name)
+            print(file_name.split('.')[0])
+            print(file_name.split('.')[0] + '_mask.tif')
+
+            mask_file = file_name.split('.')[0] + '.tif'  # Adjust this based on your file extension
+            shutil.copy(os.path.join(mask_folder, mask_file), os.path.join(train_mask_dir, mask_file))
+    for file_name in test_data_files:
+        if file_name.endswith('.tif'):
+            mask_file = file_name.split('.')[0] + '.tif'  # Adjust this based on your file extension
+            shutil.copy(os.path.join(mask_folder, mask_file), os.path.join(test_mask_dir, mask_file))
+
+    print("Data split successfully.")
 
 
 ##################### MORPHOMETRIC FEATURES ALGORITHMS ############################
