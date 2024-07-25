@@ -1863,15 +1863,18 @@ def check_empty_rasters(raster_dir, threshold, DSM_dir=None):
             array = band.ReadAsArray()
             # Count the number of non-zero pixels
             non_zero_count = (array != 0).sum()
+            print(f'Raster: {raster}, Non-zero count: {non_zero_count}')
             # Determine the destination based on the non-zero count
             if non_zero_count < threshold:
                 os.rename(raster_path, os.path.join(empty_dir, raster))
+                print('empty')
                 if DSM_dir:
                     dsm_path = os.path.join(DSM_dir, raster)
                     if os.path.exists(dsm_path):
                         os.rename(dsm_path, os.path.join(empty_DSM_dir, raster))
             else:
                 os.rename(raster_path, os.path.join(not_empty_dir, raster))
+                print('not empty')
                 if DSM_dir:
                     dsm_path = os.path.join(DSM_dir, raster)
                     if os.path.exists(dsm_path):
