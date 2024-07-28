@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 class DriveDataset(Dataset):
-    def __init__(self, images_path, masks_path, feature=None):
+    def __init__(self, images_path, masks_path, feature=None, images_path2=None):
         self.images_path = images_path
         if feature is not None:
             self.images_path2 = feature
@@ -21,31 +21,25 @@ class DriveDataset(Dataset):
         """ Reading image """
         image = gdal.Open(self.images_path[index])
         image = image.ReadAsArray()
-        if self.images_path2 is not None:
-            image2 = gdal.Open(self.images_path2[index])
-            image2 = image2.ReadAsArray()
-            image = np.stack((image, image2), axis=2)
-
-        # image = image.reshape(256, 256, 1)  # Assuming single channel image
 
         """ Reading mask """
         mask = gdal.Open(self.masks_path[index]).ReadAsArray()
-        mask = np.expand_dims(mask, axis=0)  # Add batch dimension
 
         # Convert numpy arrays to torch tensors
         image = torch.from_numpy(image.astype(np.float32))
         mask = torch.from_numpy(mask.astype(np.float32))
 
-        # Transpose dimensions to (N, C, H, W) format
-        image = image.permute(2, 0, 1)
-        mask = mask.permute(0, 1, 2)  # Add channel dimension
+        # Check the dimensions and add channel dimension if necessary
+        if len(image.shape) == 2:  # If single channel image
+            image = image.unsqueeze(0)  # Add channel dimension
+        elif len(image.shape) == 3 and image.shape[0] != 3:  # If (H, W, C) format
+            image = image.permute(2, 0, 1)  # Change to (C, H, W)
 
-        # Resize image and mask
-        # new_height, new_width = 256, 256  # Specify the desired height and width
-        # image = F.interpolate(image.unsqueeze(0),  mode='bilinear', align_corners=False)
-        # mask = F.interpolate(mask.unsqueeze(0), mode='nearest')
+        # Ensure mask has a channel dimension
+        if len(mask.shape) == 2:
+            mask = mask.unsqueeze(0)  # Add channel dimension
 
-
+        return image, mask
 
         return image, mask
 

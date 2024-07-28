@@ -1783,7 +1783,7 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    for i in range(x_tiles):
+    for i in tqdm.tqdm(range(x_tiles)):
         for j in range(y_tiles):
             # Calculate the offsets and tile size
             x_offset = i * (tile_size_x - overlap_x)
@@ -1799,7 +1799,7 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
             tile = raster_band.ReadAsArray(x_offset, y_offset, x_tile_size, y_tile_size)
 
             # Normalize the tile data
-            tile = normalize_array(tile)
+            # tile = normalize_array(tile)
 
             # Create a new raster dataset for the tile
             driver = gdal.GetDriverByName('GTiff')
@@ -1815,6 +1815,8 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
             ))
             tile_dataset.SetProjection(projection)
             tile_dataset.GetRasterBand(1).WriteArray(tile)
+            # set the nodata value
+            tile_dataset.GetRasterBand(1).SetNoDataValue(-32767)
 
             # Save and close the tile dataset
             tile_dataset.FlushCache()
@@ -1835,17 +1837,19 @@ def check_empty_rasters(raster_dir, threshold, DSM_dir=None):
     # Create the empty and not_empty directories for both raster and DSM directories
     empty_dir = os.path.join(raster_dir, 'empty')
     not_empty_dir = os.path.join(raster_dir, 'not_empty')
+    nodata_dir = os.path.join(raster_dir, 'nodata')
 
     if DSM_dir:
         empty_DSM_dir = os.path.join(DSM_dir, 'empty')
         not_empty_DSM_dir = os.path.join(DSM_dir, 'not_empty')
+        nodata_DSM_dir = os.path.join(DSM_dir, 'nodata')
 
-    for dir_path in [empty_dir, not_empty_dir]:
+    for dir_path in [empty_dir, not_empty_dir, nodata_dir]:
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
     if DSM_dir:
-        for dir_path in [empty_DSM_dir, not_empty_DSM_dir]:
+        for dir_path in [empty_DSM_dir, not_empty_DSM_dir, nodata_DSM_dir]:
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path)
 
@@ -1863,22 +1867,30 @@ def check_empty_rasters(raster_dir, threshold, DSM_dir=None):
             array = band.ReadAsArray()
             # Count the number of non-zero pixels
             non_zero_count = (array != 0).sum()
-            print(f'Raster: {raster}, Non-zero count: {non_zero_count}')
+            nodata_count = (array == -32767).sum()
+            # print(f'Raster: {raster}, Non-zero count: {non_zero_count}')
             # Determine the destination based on the non-zero count
             if non_zero_count < threshold:
                 os.rename(raster_path, os.path.join(empty_dir, raster))
-                print('empty')
+                # print('empty')
                 if DSM_dir:
                     dsm_path = os.path.join(DSM_dir, raster)
                     if os.path.exists(dsm_path):
                         os.rename(dsm_path, os.path.join(empty_DSM_dir, raster))
             else:
-                os.rename(raster_path, os.path.join(not_empty_dir, raster))
-                print('not empty')
-                if DSM_dir:
-                    dsm_path = os.path.join(DSM_dir, raster)
-                    if os.path.exists(dsm_path):
-                        os.rename(dsm_path, os.path.join(not_empty_DSM_dir, raster))
+                if nodata_count > 0:
+                    os.rename(raster_path, os.path.join(nodata_dir, raster))
+                    if DSM_dir:
+                        dsm_path = os.path.join(DSM_dir, raster)
+                        if os.path.exists(dsm_path):
+                            os.rename(dsm_path, os.path.join(nodata_DSM_dir, raster))
+                else:
+                    os.rename(raster_path, os.path.join(not_empty_dir, raster))
+
+                    if DSM_dir:
+                        dsm_path = os.path.join(DSM_dir, raster)
+                        if os.path.exists(dsm_path):
+                            os.rename(dsm_path, os.path.join(not_empty_DSM_dir, raster))
 
 
 
@@ -1902,7 +1914,6 @@ def split_data_and_masks(data_folder, mask_folder, train_ratio=0.8):
     # Get list of files
     data_files = os.listdir(data_folder)
     mask_files = os.listdir(mask_folder)
-
     # Determine number of files for training
     num_train = int(len(data_files) * train_ratio)
 
@@ -1923,12 +1934,9 @@ def split_data_and_masks(data_folder, mask_folder, train_ratio=0.8):
     # Copy mask files to train and test directories
     for file_name in train_data_files:
         if file_name.endswith('.tif'):
-            print(file_name)
-            print(file_name.split('.')[0])
-            print(file_name.split('.')[0] + '_mask.tif')
-
             mask_file = file_name.split('.')[0] + '.tif'  # Adjust this based on your file extension
             shutil.copy(os.path.join(mask_folder, mask_file), os.path.join(train_mask_dir, mask_file))
+
     for file_name in test_data_files:
         if file_name.endswith('.tif'):
             mask_file = file_name.split('.')[0] + '.tif'  # Adjust this based on your file extension
