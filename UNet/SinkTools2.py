@@ -1958,3 +1958,65 @@ def count_ones(raster_path):
     return ones_count
 
 
+def normalize_raster(input_raster_path, output_raster_path):
+    """
+    Normalize the values of a raster to the range 0-1 and save it as a new raster.
+
+    :param input_raster_path: Path to the input raster file.
+    :param output_raster_path: Path to the output raster file.
+    """
+    # Open the input raster
+    dataset = gdal.Open(input_raster_path, gdalconst.GA_ReadOnly)
+    if not dataset:
+        print(f"Failed to open raster file: {input_raster_path}")
+        return
+
+    # Read the raster data
+    band = dataset.GetRasterBand(1)
+    array = band.ReadAsArray()
+
+    # Normalize the array to the range 0-1
+    min_val = np.min(array)
+    max_val = np.max(array)
+    norm_array = (array - min_val) / (max_val - min_val)
+
+    # Create the output raster
+    driver = gdal.GetDriverByName('GTiff')
+    out_dataset = driver.Create(output_raster_path, dataset.RasterXSize, dataset.RasterYSize, 1, gdal.GDT_Float32)
+    if not out_dataset:
+        print(f"Failed to create output raster file: {output_raster_path}")
+        return
+
+    out_dataset.SetGeoTransform(dataset.GetGeoTransform())
+    out_dataset.SetProjection(dataset.GetProjection())
+
+    # Write the normalized data to the output raster
+    out_band = out_dataset.GetRasterBand(1)
+    out_band.WriteArray(norm_array)
+    out_band.SetNoDataValue(-32767)
+
+    # Clean up
+    band = None
+    dataset = None
+    out_band = None
+    out_dataset = None
+
+
+def normalize_rasters_in_folder(input_folder, output_folder):
+    """
+    Normalize the values of all rasters in a folder to the range 0-1 and save them as new rasters.
+
+    :param input_folder: Path to the folder containing input rasters.
+    :param output_folder: Path to the folder where output rasters will be saved.
+    """
+    # Check if the output folder exists, create it if not
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Process each raster file in the input folder
+    for filename in os.listdir(input_folder):
+        if filename.endswith('.tif'):
+            input_raster_path = os.path.join(input_folder, filename)
+            output_raster_path = os.path.join(output_folder, filename)
+            print(f"Normalizing {input_raster_path} and saving to {output_raster_path}")
+            normalize_raster(input_raster_path, output_raster_path)
