@@ -2018,5 +2018,7 @@ def normalize_rasters_in_folder(input_folder, output_folder):
         if filename.endswith('.tif'):
             input_raster_path = os.path.join(input_folder, filename)
             output_raster_path = os.path.join(output_folder, filename)
-            print(f"Normalizing {input_raster_path} and saving to {output_raster_path}")
+            # print(f"Normalizing {input_raster_path} and saving to {output_raster_path}")
             normalize_raster(input_raster_path, output_raster_path)
+
+
