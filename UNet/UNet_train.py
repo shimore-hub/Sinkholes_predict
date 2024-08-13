@@ -27,7 +27,7 @@ formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(leveln
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
 # Default parameters for logging
-VERBOSE = False  # Turn to True for printing to terminal
+VERBOSE = True  # Turn to True for printing to terminal
 LOG_FILE = None  # Set a file name for logging into a file
 LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
 log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
@@ -66,7 +66,7 @@ parser = argparse.ArgumentParser(
     description=DESCRIPTION,
     epilog='''Created by Nir Gutman (nirgutman013@gmail.com), 2024''')
 # arguments for logging
-parser.add_argument('-v', help='verbose - print messages to screen?', action='store_true', default=VERBOSE)
+parser.add_argument('-v', help='verbose - print q to screen?', action='store_true', default=VERBOSE)
 parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL,
                     help=f"Log level (Default: {LOG_LEVEL}). see Python's Logging module for more details")
 parser.add_argument('--logfile', metavar='log file name', help='log to file', default=LOG_FILE)
@@ -77,7 +77,7 @@ parser.add_argument('-tsy', '--tile_size_y', default=256, help='Tile Size Y')
 parser.add_argument('-bs', '--batch_size', default=64, help='Batch Size')
 parser.add_argument('-lr', '--learning_rate', default=1e-4, help='Learning Rate')
 parser.add_argument('-ep', '--epochs_number', default=30, help='Number of Epochs')
-parser.add_argument('-Cr', '--checkpoint_resume', action='store_true', help='Resume from Checkpoint')
+parser.add_argument('-Cr', '--checkpoint_resume', default=False,  help='Resume from Checkpoint')
 parser.add_argument('-Cp', '--checkpoint_path', default=None, help='Model Checkpoint Path')
 parser.add_argument('-Cf', '--checkpoint_folder_path', default=None, help='Model Checkpoint Folder Path')
 
@@ -158,8 +158,24 @@ if __name__ == '__main__':
     num_epochs = int(args.epochs_number)
     lr = float(args.learning_rate)
     resume_from_checkpoint = args.checkpoint_resume
-    checkpoint_path = args.checkpoint_path
-    checkpoint_folder_path = args.checkpoint_folder_path
+
+    if resume_from_checkpoint is True:
+        if args.checkpoint_path is None:
+            log.error("Checkpoint path is required when resuming training.")
+            sys.exit(1)
+        else:
+            checkpoint_path = args.checkpoint_path
+    else:
+        checkpoint_path = args.checkpoint_path
+
+
+
+    if args.checkpoint_folder_path is None:
+        # make the directory that is two steps above DSM_folder
+        checkpoint_folder_path = os.path.join(os.path.dirname(os.path.dirname(DSM_folder)), 'Model_Checkpoints')
+        create_dir(checkpoint_folder_path)
+    else:
+        checkpoint_folder_path = args.checkpoint_folder_path
 
     # Split data into training and validation sets based on the defined ratio
     train_ratio = 0.8  # Define training ratio here or pass as an argument
@@ -218,11 +234,11 @@ if __name__ == '__main__':
     best_valid_loss = float("inf")
 
     for epoch in tqdm.tqdm(range(num_epochs)):
-        start_time = time.time()
+        epoch_start_time = time.time()
 
         train_loss = train(model, train_loader, optimizer, loss_fn, device)
         valid_loss = evaluate(model, valid_loader, loss_fn, device)
-        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch + 1}.pth"
+        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch + 26}.pth"
 
         # Saving the model if validation loss improves
         if valid_loss < best_valid_loss:
@@ -231,10 +247,14 @@ if __name__ == '__main__':
             best_valid_loss = valid_loss
             torch.save(model.state_dict(), epoch_checkpoint_path)
 
-        end_time = time.time()
-        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+        epoch_end_time = time.time()
+        epoch_mins, epoch_secs = epoch_time(epoch_start_time, epoch_end_time)
 
         # Print epoch results
         log.info(f'Epoch: {epoch + 1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
         log.info(f'\tTrain Loss: {train_loss:.3f}')
         log.info(f'\t Val. Loss: {valid_loss:.3f}')
+
+
+    log.info('Script completed successfully.')
+    log.info(f'Total execution time: {time.time() - start_time} seconds.')

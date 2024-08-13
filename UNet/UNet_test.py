@@ -64,7 +64,7 @@ parser.add_argument('model_path', help='Path to the trained model file')
 
 args = parser.parse_args()
 
-threshold = args.threshold
+threshold = float(args.threshold)
 save_array = args.save_array
 calc_each_samp = args.calc_each_samp
 x_size = args.tile_size_x
@@ -74,6 +74,8 @@ rasters_test_path = args.input_DSM_test_tiles_dir
 masks_test_path = args.input_mask_test_tiles_dir
 model_path = args.model_path
 output_folder = args.output_dir
+if output_folder is None:
+    output_folder = os.path.join(os.path.dirname(os.path.dirname(args.input_DSM_test_tiles_dir)), 'predictions')
 
 
 ###############################################################################
@@ -161,7 +163,7 @@ def predict_mask(raster_file, checkpoint_path, device):
     return pred_mask
 
 
-def model_full_test(rasters_folder, masks_folder, output_folder, model_path):
+def model_full_test(rasters_folder, masks_folder, output_folder, model_path, save_array=False, calc_each_samp=False):
     # check if the output folder exists
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -265,6 +267,6 @@ if __name__ == '__main__':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model_full_test(rasters_test_path, masks_test_path, output_folder, model_path)
+    model_full_test(rasters_test_path, masks_test_path, output_folder, model_path, save_array, calc_each_samp)
 
     log.info(f"Script execution time: {time.time() - start_time} seconds")
