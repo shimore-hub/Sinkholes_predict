@@ -239,7 +239,7 @@ if __name__ == '__main__':
         train_loss = train(model, train_loader, optimizer, loss_fn, device)
         valid_loss = evaluate(model, valid_loader, loss_fn, device)
         epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch + 26}.pth"
-
+s
         # Saving the model if validation loss improves
         if valid_loss < best_valid_loss:
             log.info(

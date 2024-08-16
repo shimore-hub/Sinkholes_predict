@@ -154,6 +154,10 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
 
             # Read the tile data
             tile = raster_band.ReadAsArray(x_offset, y_offset, x_tile_size, y_tile_size)
+            # if the mean of values in the tile is smaller than -32700 then dont save this tile
+            if np.mean(tile) < -32700:
+                continue
+
 
             # Normalize the tile data
             tile = normalize_array(tile)
@@ -248,12 +252,17 @@ def array2raster(raster_path, array, output_path, geotransform, projection):
         geotransform (tuple): Geotransform parameters (top left x, w-e pixel resolution, rotation, top left y, rotation, n-s pixel resolution).
         projection (str): Projection in WKT format.
     """
+    # Ensure the output directory exists
+    output_dir = os.path.dirname(output_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created directory: {output_dir}")
+
     # Open the original raster file
     original_raster = gdal.Open(raster_path)
 
     # Get the number of rows and columns from the original raster
     array = np.squeeze(array)
-    # print(f'array shape: {array.shape}')
     rows, cols = array.shape
 
     # Create the output raster file
@@ -261,6 +270,9 @@ def array2raster(raster_path, array, output_path, geotransform, projection):
     out_raster = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32)
 
     # Write the array data to the output raster
+    if out_raster is None:
+        print(f"Unable to create output raster {output_path}")
+        return
     out_band = out_raster.GetRasterBand(1)
     out_band.WriteArray(array)
 
@@ -270,7 +282,7 @@ def array2raster(raster_path, array, output_path, geotransform, projection):
 
     # Close the output raster file
     out_band.FlushCache()
-
+    out_raster = None  # Close the file to ensure data is written
 
 def combine_rasters_with_gdal(folder_path, output_file):
     # List all .tif files in the folder
@@ -281,7 +293,7 @@ def combine_rasters_with_gdal(folder_path, output_file):
                              'gdal_merge.py',
                              '-o', output_file,
                              '-n', '0',  # NoData value to ignore
-                             '-a_nodata', '0',  # NoData value to set in the output
+                             '-a_nodata', '-32767',  # NoData value to set in the output
                              '-pct',  # Use the maximum value in overlapping regions
                          ] + input_files
 
@@ -334,32 +346,35 @@ if __name__ == '__main__':
         output_tiles_dir = os.path.join(os.path.dirname(input_raster_path), 'tiles')
     else:
         output_tiles_dir = args.output_tiles_dir
+    log.info(f'Output Tiles Directory: {output_tiles_dir}')
 
     # if the output_pred_dir directory is not provided, set it to the directory of the input raster
     if args.output_pred_dir is None:
         output_pred_dir = os.path.join(os.path.dirname(input_raster_path), 'predictions')
     else:
         output_pred_dir = args.output_pred_dir
+    log.info(f'Output Prediction Directory: {output_pred_dir}')
 
     # if the output_mosaic directory is not provided, set it to the directory of the input raster
     if args.output_mosaic is None:
         output_mosaic = os.path.join(os.path.dirname(input_raster_path), 'mosaic.tif')
     else:
         output_mosaic = args.output_mosaic
+    log.info(f'Output Mosaic File: {output_mosaic}')
 
     # if the output_shp directory is not provided, set it to the directory of the input raster
     if args.output_shp is None:
         output_shp = os.path.join(os.path.dirname(input_raster_path), 'predictions.shp')
     else:
         output_shp = args.output_shp
+    log.info(f'Output Shapefile: {output_shp}')
 
 
+    tile_size_x = int(args.tile_size_x)  # width of each tile in pixels
+    tile_size_y = int(args.tile_size_y)  # height of each tile in pixels
 
-    tile_size_x = args.tile_size_x  # width of each tile in pixels
-    tile_size_y = args.tile_size_y  # height of each tile in pixels
-
-    overlap_x = args.tile_overlap_x  # overlap in x direction in pixels
-    overlap_y = args.tile_overlap_y  # overlap in y direction in pixels
+    overlap_x = int(args.tile_overlap_x)  # overlap in x direction in pixels
+    overlap_y = int(args.tile_overlap_y)  # overlap in y direction in pixels
 
     divide_raster_to_tiles(input_raster_path, output_tiles_dir, tile_size_x, tile_size_y, overlap_x, overlap_y)
 
@@ -378,13 +393,14 @@ if __name__ == '__main__':
             pred_mask = pred_mask.squeeze()
             output_file = os.path.join(output_pred_dir, tile_file)
             # save_mask_as_raster(pred_mask, tile_path, output_file)
+
             array2raster(tile_path, pred_mask, output_file, gdal.Open(tile_path).GetGeoTransform(),
                          gdal.Open(tile_path).GetProjection())
 
-
+    print(2)
     # Combining the tiles to a single raster based on the original raster
     combine_rasters_with_gdal(output_pred_dir, output_mosaic)
-
+    print(3)
     # Binary Mosaic to Shapefile
     raster_to_vector(output_mosaic, output_shp)
 
