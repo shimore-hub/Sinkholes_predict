@@ -134,8 +134,12 @@ def filter_small_obj(raster, output, num):
 def pred_array2raster(original_raster, pred_array, output_path):
     # takes an array (probability or prediction) with 3 columns (2 coordinates & 1 value) and transforms to tif file
     pred = np.load(pred_array)
+    print(pred)
+    print(pred.shape)
     raster = gdal.Open(original_raster)
     original_array = raster.ReadAsArray()
+    print(original_array)
+    print(original_array.shape)
     geotransform = raster.GetGeoTransform()
     projection = raster.GetProjection()
     print(1)
@@ -881,9 +885,6 @@ def min_max_normalization(input_path, output_path, minmax=None):
 
     save_array_as_tiff(normalized_array, output_path, geotransform, proj)
 
-from osgeo import gdal
-import numpy as np
-import os
 
 def normalize_rasters(input_folder, output_folder):
     # Function to normalize an array

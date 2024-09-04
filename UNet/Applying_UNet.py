@@ -21,6 +21,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import sys
 import subprocess
+import tempfile
 
 start_time = time.time()
 
@@ -30,7 +31,7 @@ formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(leveln
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
 # Default parameters for logging
-VERBOSE = False  # Turn to True for printing to terminal
+VERBOSE = True  # Turn to True for printing to terminal
 LOG_FILE = None  # Set a file name for logging into a file
 LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
 log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
@@ -38,6 +39,9 @@ log.setLevel(LOG_LEVEL)  # set at default log level
 
 DESCRIPTION = """
 Script for testing a trained U-Net model on DSM and mask tiles, and evaluating its performance.
+
+using example:
+./Applying_UNet.py DSM_path Model_path -Os Shp_path -tox 100 -toy 100 -l INFO -th 0.9 -Ote True 
 """
 
 # Setting commandline argument using a parser
@@ -59,6 +63,7 @@ parser.add_argument('-toy', '--tile_overlap_y', default=0, help='Tile Overlap Y'
 parser.add_argument('-th', '--threshold', default=0.5, help='Threshold for binary mask prediction')
 parser.add_argument('-Otd', '--output_tiles_dir', default=None, help='Output DSM Tiles Directory Path '
                                                                      '(Default: Input Directory)')
+parser.add_argument('-Ote', '--output_tiles_exist', default=False, help='Does the Output DSM Tiles exist or not? ')
 parser.add_argument('-Opd', '--output_pred_dir', default=None, help='Output Prediction Tiles Directory '
                                                                     'Path (Default: Input Directory)')
 parser.add_argument('-Om', '--output_mosaic', default=None, help='Output Mosaic File Path '
@@ -288,17 +293,26 @@ def combine_rasters_with_gdal(folder_path, output_file):
     # List all .tif files in the folder
     input_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.tif')]
 
+    # Create a temporary file to hold the input file paths
+    with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt') as temp_file:
+        temp_file_name = temp_file.name
+        temp_file.write("\n".join(input_files))
+
     # Build the gdal_merge command
     gdal_merge_command = [
-                             'gdal_merge.py',
-                             '-o', output_file,
-                             '-n', '0',  # NoData value to ignore
-                             '-a_nodata', '-32767',  # NoData value to set in the output
-                             '-pct',  # Use the maximum value in overlapping regions
-                         ] + input_files
+        'gdal_merge.py',
+        '-o', output_file,
+        '-n', '0',  # NoData value to ignore
+        '-a_nodata', '-32767',  # NoData value to set in the output
+        '-pct',  # Use the maximum value in overlapping regions
+        '--optfile', temp_file_name  # Provide the list of files via optfile
+    ]
 
     # Execute the command
     subprocess.run(gdal_merge_command)
+
+    # Cleanup the temporary file
+    os.remove(temp_file_name)
 
 
 def raster_to_vector(input_raster_path, output_vector_path):
@@ -376,12 +390,15 @@ if __name__ == '__main__':
     overlap_x = int(args.tile_overlap_x)  # overlap in x direction in pixels
     overlap_y = int(args.tile_overlap_y)  # overlap in y direction in pixels
 
-    divide_raster_to_tiles(input_raster_path, output_tiles_dir, tile_size_x, tile_size_y, overlap_x, overlap_y)
+    if args.output_tiles_exist:
+        log.info('Output tiles exist')
+    else:
+        divide_raster_to_tiles(input_raster_path, output_tiles_dir, tile_size_x, tile_size_y, overlap_x, overlap_y)
 
     # Prediction for each tile
     # using the pre-trained UNet model to predict the tiles, and save the results as binary tiles
 
-    threshold = args.threshold
+    threshold = float(args.threshold)
     save_array = False
     calc_each_samp = False
 

@@ -34,6 +34,10 @@ log.setLevel(LOG_LEVEL)  # set at default log level
 
 DESCRIPTION = """
 Script for testing a trained U-Net model on DSM and mask tiles, and evaluating its performance.
+
+Using example:
+./UNet_test.py test_tiles_dir mask_tiles_dir model_path -l INFO -v -th 0.999
+
 """
 
 # Setting commandline argument using a parser
@@ -163,7 +167,7 @@ def predict_mask(raster_file, checkpoint_path, device):
     return pred_mask
 
 
-def model_full_test(rasters_folder, masks_folder, output_folder, model_path, save_array=False, calc_each_samp=False):
+def model_full_test(rasters_folder, masks_folder, output_folder, model_path, save_array=True, calc_each_samp=False):
     # check if the output folder exists
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -184,7 +188,7 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
     TN_total = 0
     FN_total = 0
     # use tqdm for progress bar
-
+    log.info(f'save raster arrays is {save_array}')
     for raster in tqdm.tqdm(rasters):
         # load the raster
         raster_path = os.path.join(rasters_folder, raster)
@@ -228,10 +232,23 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
             log.info(f'raster name: {raster} \nSensitivity: {sensitivity}, specificity: {specificity}')
             # save the predicted mask
 
-        if save_array is True:
-            pred_path = os.path.join(output_folder, raster.split('.')[0] + '_pred.tif')
+        # if save_array is True:
+        pred_path = os.path.join(output_folder, raster.split('.')[0] + '_pred.tif')
             # save array as raster according to the original raster using gdal not with st
-            st.array2raster(raster_path, pred, pred_path, geotrans, proj)
+
+        def save_array_as_tiff(array, output, geotrans, proj):
+            driver = gdal.GetDriverByName('GTiff')
+            outRaster = driver.Create(output, array.shape[1], array.shape[0], 1, gdal.GDT_Float32)
+            outRaster.SetGeoTransform(geotrans)
+            outband = outRaster.GetRasterBand(1)
+            outband.WriteArray(array)
+            outRaster.SetProjection(proj)
+            outband.FlushCache()
+
+        if save_array is True:
+            if pred.ndim > 2:
+                pred = np.squeeze(pred)
+            save_array_as_tiff(pred, pred_path, geotrans, proj)
 
         # update the total counts
         TP_total += TP
@@ -258,6 +275,7 @@ if __name__ == '__main__':
     # Create the output directory if not inserted as input
     if args.output_dir is None:
         output_dir = os.path.join(os.path.dirname(args.input_DSM_test_tiles_dir), 'predictions')
+        log.info(f"Output directory is not inserted, the output will be saved in {output_dir}")
     else:
         output_dir = args.output_dir
 
