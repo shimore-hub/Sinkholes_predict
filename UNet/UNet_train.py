@@ -18,21 +18,9 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import sys
 import tqdm
+import SinkTools2 as st
 
-start_time = time.time()
-
-# Auxiliary parameters for logging
-_LOG_LEVEL_STRINGS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
-formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
-                              datefmt='%Y-%m-%dT%H:%M:%S')
-
-# Default parameters for logging
-VERBOSE = True  # Turn to True for printing to terminal
-LOG_FILE = None  # Set a file name for logging into a file
-LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
-log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
-log.setLevel(LOG_LEVEL)  # set at default log level
-
+########################################################################################
 DESCRIPTION = """
 This script automates the training of a U-Net model for semantic segmentation using PyTorch. 
 It includes functionalities for loading datasets, training the model, evaluating performance, 
@@ -58,10 +46,26 @@ and saving checkpoints. The key features are:
    The script supports various command-line arguments for configuring the training process, 
    including input directories, tile sizes, batch size, learning rate, number of epochs, 
    and checkpointing options.
-   
+
 Using example:
 ./UNet_train.py train_data_dir train_masks_dir -l INFO -Cr True -Cp Checkpoint_path
 """
+########################################################################################
+start_time = time.time()
+
+# Auxiliary parameters for logging
+_LOG_LEVEL_STRINGS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
+formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
+                              datefmt='%Y-%m-%dT%H:%M:%S')
+
+# Default parameters for logging
+VERBOSE = True  # Turn to True for printing to terminal
+LOG_FILE = None  # Set a file name for logging into a file
+LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
+log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
+log.setLevel(LOG_LEVEL)  # set at default log level
+
+
 
 # Setting commandline argument using a parser
 parser = argparse.ArgumentParser(
@@ -77,9 +81,10 @@ parser.add_argument('--logfile', metavar='log file name', help='log to file', de
 parser.add_argument('-c', '--configfile', default=None, help='Config file.')
 parser.add_argument('-tsx', '--tile_size_x', default=256, help='Tile Size X')
 parser.add_argument('-tsy', '--tile_size_y', default=256, help='Tile Size Y')
+parser.add_argument('-tr', '--train_ratio', default=0.8, help='Train-Validation data ratio')
 parser.add_argument('-bs', '--batch_size', default=64, help='Batch Size')
 parser.add_argument('-lr', '--learning_rate', default=1e-4, help='Learning Rate')
-parser.add_argument('-ep', '--epochs_number', default=30, help='Number of Epochs')
+parser.add_argument('-ep', '--epochs_number', default=50, help='Number of Epochs')
 parser.add_argument('-Cr', '--checkpoint_resume', default=False,  help='Resume from Checkpoint')
 parser.add_argument('-Cp', '--checkpoint_path', default=None, help='Model Checkpoint Path')
 parser.add_argument('-Cf', '--checkpoint_folder_path', default=None, help='Model Checkpoint Folder Path')
@@ -89,46 +94,13 @@ parser.add_argument('input_DSM_train_tiles_dir', help='Path to the training DSM 
 parser.add_argument('input_mask_train_tiles_dir', help='Path to the training mask tiles directory')
 
 
-def set_logger(log, verbose=VERBOSE, log_level=LOG_LEVEL, logfile=LOG_FILE):
-    """ A function for setting the logger.
-    log: The logger needed to be set. Typically, set this log at the top of the file with logging.get(LOGGERNAME).
-    verbose: True (print to screen) or False (do not print to screen)
-    log_level: A valid logging level ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG')
-    logfile: A file name (including path). The file is a daily file and for long runs will change at midnight. See logging documentation for TimedRotatingFileHandler
-    """
-
-    log.setLevel(log_level)
-    if verbose:
-        # create console handler
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(log_level)
-        ch.setFormatter(formatter)
-        if logging.StreamHandler not in [h.__class__ for h in log.handlers]:
-            log.addHandler(ch)
-        else:
-            log.warning('log Stream handler already applied.')
-    if logfile:
-        # create file handler
-        fh = TimedRotatingFileHandler(logfile,
-                                      when='midnight',
-                                      utc=True)
-        fh.setLevel(log_level)
-        fh.setFormatter(formatter)
-        if TimedRotatingFileHandler not in [h.__class__ for h in log.handlers]:
-            log.addHandler(fh)
-        else:
-            log.warning('Log file handler already applied.')
-        log.info(f'Log file is: {logfile}')
-    else:
-        log.debug('No Log file was set')
-
 
 if __name__ == '__main__':
     seeding(42)
     args = parser.parse_args()
 
     # set the logger
-    set_logger(log, args.v, args.log_level, args.logfile)
+    st.set_logger(log, args.v, args.log_level, args.logfile)
 
     mask_folder = args.input_mask_train_tiles_dir
     DSM_folder = args.input_DSM_train_tiles_dir
@@ -175,13 +147,29 @@ if __name__ == '__main__':
 
     if args.checkpoint_folder_path is None:
         # make the directory that is two steps above DSM_folder
-        checkpoint_folder_path = os.path.join(os.path.dirname(os.path.dirname(DSM_folder)), 'Model_Checkpoints')
+        checkpoint_folder_path = os.path.join(os.path.dirname(os.path.dirname(DSM_folder)), 'Model_Checkpoints_batch'+
+                                              str(args.batch_size) + '_lr'+ str(args.learning_rate) + time.strftime("%Y%m%d-%H%M%S"))
         create_dir(checkpoint_folder_path)
     else:
         checkpoint_folder_path = args.checkpoint_folder_path
 
+
+    # in the checkpoint folder, save a txt file with all of the run details:
+    with open(os.path.join(checkpoint_folder_path, 'run_details.txt'), 'w') as f:
+        f.write(f'time: {time.strftime("%Y%m%d-%H%M%S")}\n')
+        f.write(f'Input DSM tiles directory: {DSM_folder}\n')
+        f.write(f'Input mask tiles directory: {mask_folder}\n')
+        f.write(f'Arguments: {args}\n')
+        f.write(f'Checkpoint folder: {checkpoint_folder_path}\n')
+        f.write(f'Tile size: {size}\n')
+        f.write(f'Batch size: {batch_size}\n')
+        f.write(f'Learning rate: {lr}\n')
+        f.write(f'Number of epochs: {num_epochs}\n')
+        f.write(f'Resume from checkpoint: {resume_from_checkpoint}\n')
+        f.write(f'Checkpoint path: {checkpoint_path}\n')
+
     # Split data into training and validation sets based on the defined ratio
-    train_ratio = 0.8  # Define training ratio here or pass as an argument
+    train_ratio = args.train_ratio  # Define training ratio here or pass as an argument
     num_train_samples = int(train_ratio * len(all_train_x))
 
     train_indices = random.sample(range(len(all_train_x)), num_train_samples)
@@ -235,13 +223,22 @@ if __name__ == '__main__':
 
     # Train and validate the model for the specified number of epochs
     best_valid_loss = float("inf")
+    train_loss_list = []
+    valid_loss_list = []
+    precision_list = []
+    recall_list = []
+    f1_list = []
+    accuracy_list = []
+    sensitivity_list = []
+    specificity_list = []
 
     for epoch in tqdm.tqdm(range(num_epochs)):
         epoch_start_time = time.time()
 
         train_loss = train(model, train_loader, optimizer, loss_fn, device)
-        valid_loss = evaluate(model, valid_loader, loss_fn, device)
-        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch + 26}.pth"
+        valid_loss, precision, recall, f1, accuracy, sensitivity, specificity = evaluate(model, valid_loader, loss_fn, device)
+        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch+32}.pth"
+
 
         # Saving the model if validation loss improves
         if valid_loss < best_valid_loss:
@@ -257,7 +254,67 @@ if __name__ == '__main__':
         log.info(f'Epoch: {epoch + 1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
         log.info(f'\tTrain Loss: {train_loss:.3f}')
         log.info(f'\t Val. Loss: {valid_loss:.3f}')
+        log.info(f'\t Precision: {precision:.3f}')
+        log.info(f'\t Recall: {recall:.3f}')
+        log.info(f'\t F1: {f1:.3f}')
+        log.info(f'\t Accuracy: {accuracy:.3f}')
+        log.info(f'\t Sensitivity: {sensitivity:.3f}')
+        log.info(f'\t Specificity: {specificity:.3f}')
+
+        # Append metrics to lists
+        train_loss_list.append(train_loss)
+        valid_loss_list.append(valid_loss)
+        precision_list.append(precision)
+        recall_list.append(recall)
+        f1_list.append(f1)
+        accuracy_list.append(accuracy)
+        sensitivity_list.append(sensitivity)
+        specificity_list.append(specificity)
+
+
 
 
     log.info('Script completed successfully.')
     log.info(f'Total execution time: {time.time() - start_time} seconds.')
+
+    # Save metrics to a file
+    metrics_path = os.path.join(checkpoint_folder_path, 'metrics.txt')
+    with open(metrics_path, 'w') as f:
+        f.write('Train Loss,Valid Loss,Precision,Recall,F1,Accuracy,Sensitivity,Specificity\n')
+        for i in range(num_epochs):
+            f.write(f'{train_loss_list[i]},{valid_loss_list[i]},{precision_list[i]},{recall_list[i]},{f1_list[i]},{accuracy_list[i]},{sensitivity_list[i]},{specificity_list[i]}\n')
+
+    log.info(f'Metrics saved to: {metrics_path}')
+
+    # Save final model
+    final_model_path = os.path.join(checkpoint_folder_path, 'final_model.pth')
+    torch.save(model.state_dict(), final_model_path)
+    log.info(f'Final model saved to: {final_model_path}')
+
+    # save plots of loss and metrics as pdf
+    import matplotlib.pyplot as plt
+    import numpy as np
+    epochs = np.arange(num_epochs)
+    plt.figure()
+    plt.plot(epochs, train_loss_list, label='Train Loss')
+    plt.plot(epochs, valid_loss_list, label='Valid Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Loss vs Epoch')
+    plt.savefig(os.path.join(checkpoint_folder_path, 'loss_plot.pdf'))
+
+    plt.figure()
+    plt.plot(epochs, precision_list, label='Precision')
+    plt.plot(epochs, recall_list, label='Recall')
+    plt.plot(epochs, f1_list, label='F1')
+    plt.plot(epochs, accuracy_list, label='Accuracy')
+    plt.plot(epochs, sensitivity_list, label='Sensitivity')
+    plt.plot(epochs, specificity_list, label='Specificity')
+    plt.xlabel('Epoch')
+    plt.ylabel('Metric')
+    plt.legend()
+    plt.title('Metrics vs Epoch')
+    plt.savefig(os.path.join(checkpoint_folder_path, 'metrics_plot.pdf'))
+
+    log.info('Plots saved to: {checkpoint_folder_path}')
