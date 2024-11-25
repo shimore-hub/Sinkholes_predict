@@ -33,6 +33,47 @@ import tqdm
 import random
 import torch
 import shutil
+import logging
+import sys
+from logging.handlers import TimedRotatingFileHandler
+
+
+formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
+                              datefmt='%Y-%m-%dT%H:%M:%S')
+
+
+def set_logger(log, verbose, log_level, logfile):
+    """ A function for setting the logger.
+    log: The logger needed to be set. Typically, set this log at the top of the file with logging.get(LOGGERNAME).
+    verbose: True (print to screen) or False (do not print to screen)
+    log_level: A valid logging level ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG')
+    logfile: A file name (including path). The file is a daily file and for long runs will change at midnight. See logging documentation for TimedRotatingFileHandler
+    """
+
+    log.setLevel(log_level)
+    if verbose:
+        # create console handler
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(log_level)
+        ch.setFormatter(formatter)
+        if logging.StreamHandler not in [h.__class__ for h in log.handlers]:
+            log.addHandler(ch)
+        else:
+            log.warning('log Stream handler already applied.')
+    if logfile:
+        # create file handler
+        fh = TimedRotatingFileHandler(logfile,
+                                      when='midnight',
+                                      utc=True)
+        fh.setLevel(log_level)
+        fh.setFormatter(formatter)
+        if TimedRotatingFileHandler not in [h.__class__ for h in log.handlers]:
+            log.addHandler(fh)
+        else:
+            log.warning('Log file handler already applied.')
+        log.info(f'Log file is: {logfile}')
+    else:
+        log.debug('No Log file was set')
 
 
 def clip_raster_by_raster(src_ras, ref_ras, output_path):
@@ -172,12 +213,8 @@ def save_array_as_tiff(array, output_path, geotransform, projection, nodata_val=
     :param nodata_val:
     :return:
     """
-    print(geotransform)
-    print(projection)
     driver = gdal.GetDriverByName('GTiff')
     rows, cols = array.shape
-    print(rows, cols)
-    print(type(rows))
     dataset = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32)
     dataset.SetGeoTransform(geotransform)
     dataset.SetProjection(projection)

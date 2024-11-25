@@ -88,6 +88,7 @@ parser.add_argument('-ep', '--epochs_number', default=50, help='Number of Epochs
 parser.add_argument('-Cr', '--checkpoint_resume', default=False,  help='Resume from Checkpoint')
 parser.add_argument('-Cp', '--checkpoint_path', default=None, help='Model Checkpoint Path')
 parser.add_argument('-Cf', '--checkpoint_folder_path', default=None, help='Model Checkpoint Folder Path')
+parser.add_argument('-Cep', '--checkpoint_epoch_number', default=0, help='Where the model is continuing from')
 
 # ADD ANY OTHER ARGUMENTS HERE
 parser.add_argument('input_DSM_train_tiles_dir', help='Path to the training DSM tiles directory')
@@ -153,6 +154,7 @@ if __name__ == '__main__':
     else:
         checkpoint_folder_path = args.checkpoint_folder_path
 
+    checkpoint_epoch_number = int(args.checkpoint_epoch_number)
 
     # in the checkpoint folder, save a txt file with all of the run details:
     with open(os.path.join(checkpoint_folder_path, 'run_details.txt'), 'w') as f:
@@ -237,7 +239,7 @@ if __name__ == '__main__':
 
         train_loss = train(model, train_loader, optimizer, loss_fn, device)
         valid_loss, precision, recall, f1, accuracy, sensitivity, specificity = evaluate(model, valid_loader, loss_fn, device)
-        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch+32}.pth"
+        epoch_checkpoint_path = f"{checkpoint_folder_path}/unet_epoch_{epoch+checkpoint_epoch_number}.pth"
 
 
         # Saving the model if validation loss improves

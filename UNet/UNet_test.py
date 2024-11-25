@@ -11,7 +11,7 @@ import torch
 from osgeo import gdal
 import numpy as np
 import torch.nn.functional as F
-from model import build_unet
+from origin_model import build_unet
 import argparse
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -34,10 +34,6 @@ log.setLevel(LOG_LEVEL)  # set at default log level
 
 DESCRIPTION = """
 Script for testing a trained U-Net model on DSM and mask tiles, and evaluating its performance.
-
-Using example:
-./UNet_test.py test_tiles_dir mask_tiles_dir model_path -l INFO -v -th 0.999
-
 """
 
 # Setting commandline argument using a parser
@@ -54,7 +50,7 @@ parser.add_argument('--logfile', metavar='log file name', help='log to file', de
 parser.add_argument('-c', '--configfile', default=None, help='Config file.')
 parser.add_argument('-tsx', '--tile_size_x', default=256, help='Tile Size X')
 parser.add_argument('-tsy', '--tile_size_y', default=256, help='Tile Size Y')
-parser.add_argument('-sa', '--save_array', default=False, help='Save Arrays of Each Prediction')
+parser.add_argument('-sa', '--save_array', default=True, help='Save Arrays of Each Prediction')
 parser.add_argument('-cs', '--calc_each_samp', default=False, help='Calculate Statistics also for each'
                                                                    ' sample separately')
 parser.add_argument('-th', '--threshold', default=0.5, help='Threshold for prediction')
@@ -117,10 +113,10 @@ def set_logger(log, verbose=VERBOSE, log_level=LOG_LEVEL, logfile=LOG_FILE):
         log.debug('No Log file was set')
 
 
-def calculate_metrics(predictions, labels):
-    # Convert predictions and labels to boolean arrays
+def calculate_metrics(predictions, labels, threshold):
+    # # Convert predictions and labels to boolean arrays
     predictions = np.array(predictions) > threshold  # Assuming predictions are probabilities
-    labels = np.array(labels) > threshold  # Assuming labels are binary (0 or 1)
+    # labels = np.array(labels) > threshold  # Assuming labels are binary (0 or 1)
 
     # True Positives (TP): Predicted positive and actually positive
     TP = np.sum(np.logical_and(predictions, labels))
@@ -162,7 +158,7 @@ def predict_mask(raster_file, checkpoint_path, device):
         pred_mask = pred_mask.cpu().numpy()
         pred_mask = np.squeeze(pred_mask, axis=0)  # Remove batch dimension
         # make a mask of 0s and 1s
-        pred_mask = np.where(pred_mask >= threshold, 1, 0)
+        # pred_mask = np.where(pred_mask >= threshold, 1, 0)
 
     return pred_mask
 
@@ -187,8 +183,9 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
     FP_total = 0
     TN_total = 0
     FN_total = 0
+
     # use tqdm for progress bar
-    log.info(f'save raster arrays is {save_array}')
+
     for raster in tqdm.tqdm(rasters):
         # load the raster
         raster_path = os.path.join(rasters_folder, raster)
@@ -219,8 +216,36 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
         # predict single raster
         pred = predict_mask(raster_path, model_path, device)
 
+        # print(f'pred shape: {pred[0].shape}')
+        # print(f'pred type: {type(pred)}')
+
+        if save_array is True:
+            pred_path = os.path.join(output_folder, raster.split('.')[0] + '_pred.tif')
+            # save array as raster according to the original raster using gdal not with st
+            st.pred_array2raster(raster_path, pred, pred_path, geotrans, proj)
+            log.info(f'Prediction saved to: {pred_path}')
+
+        pred_path = os.path.join(output_folder, raster.split('.')[0] + '_pred.tif')
+        # save array as raster according to the original raster using gdal not with st
+        st.save_array_as_tiff(pred[0], pred_path, geotrans, proj)
+        # log.info(f'Prediction saved to: {pred_path}')
+
+        TP = []
+        FP = []
+        TN = []
+        FN = []
+        thresholds = np.linspace(0, 1, num=20)
         # calculate the metrics
-        TP, FP, TN, FN = calculate_metrics(mask, pred)
+        # TP, FP, TN, FN = calculate_metrics(pred, mask, threshold)
+        for thresh in thresholds:
+            # print(f'threshold: {thresh}')
+            TP_, FP_, TN_, FN_ = calculate_metrics(pred, mask, thresh)
+            # print(TP_)
+            TP.append(TP_)
+            FP.append(FP_)
+            TN.append(TN_)
+            FN.append(FN_)
+            # print(TP)
         # calculate the metrics
         if calc_each_samp is True:
             sensitivity = TP / (TP + FN)
@@ -230,31 +255,20 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
             # f1 = 2 * (precision * sensitivity) / (precision + sensitivity)
             # jaccard = TP / (TP + FP + FN)
             log.info(f'raster name: {raster} \nSensitivity: {sensitivity}, specificity: {specificity}')
-            # save the predicted mask
 
-        # if save_array is True:
-        pred_path = os.path.join(output_folder, raster.split('.')[0] + '_pred.tif')
-            # save array as raster according to the original raster using gdal not with st
 
-        def save_array_as_tiff(array, output, geotrans, proj):
-            driver = gdal.GetDriverByName('GTiff')
-            outRaster = driver.Create(output, array.shape[1], array.shape[0], 1, gdal.GDT_Float32)
-            outRaster.SetGeoTransform(geotrans)
-            outband = outRaster.GetRasterBand(1)
-            outband.WriteArray(array)
-            outRaster.SetProjection(proj)
-            outband.FlushCache()
 
-        if save_array is True:
-            if pred.ndim > 2:
-                pred = np.squeeze(pred)
-            save_array_as_tiff(pred, pred_path, geotrans, proj)
 
         # update the total counts
-        TP_total += TP
-        FP_total += FP
-        TN_total += TN
-        FN_total += FN
+        # TP_total += TP
+        # FP_total += FP
+        # TN_total += TN
+        # FN_total += FN
+        TP_total += np.array(TP)
+        FP_total += np.array(FP)
+        TN_total += np.array(TN)
+        FN_total += np.array(FN)
+        # print(f'TP_total: {TP_total}')
 
     # calculate the total metrics
     sensitivity = TP_total / (TP_total + FN_total)
@@ -266,6 +280,41 @@ def model_full_test(rasters_folder, masks_folder, output_folder, model_path, sav
     log.info(
         f'Total sensitivity: {sensitivity}, total specificity: {specificity}, total accuracy: {accuracy}, total precision: {precision}, total f1: {f1}, total jaccard: {jaccard}')
 
+    # thresholds = np.linspace(0, 1, num=20)
+    # sensitivitys = []
+    # specificities = []
+    # accuracies = []
+    # precisions = []
+    # f1s = []
+    # jaccards = []
+    #
+    # for thresh in thresholds:
+    #
+    #     TP, FP, TN, FN = calculate_metrics(pred, mask, thresh)
+    #
+    #     sensitivity = TP / (TP + FN_total)
+    #     specificity = TN_total / (TN_total + FP_total)
+    #     accuracy = (TP_total + TN_total) / (TP_total + FP_total + TN_total + FN_total)
+    #     precision = TP_total / (TP_total + FP_total)
+    #     f1 = 2 * (precision * sensitivity) / (precision + sensitivity)
+    #     jaccard = TP_total / (TP_total + FP_total + FN_total)
+    #     log.info(
+    #         f'Total sensitivity: {sensitivity}, total specificity: {specificity}, total accuracy: {accuracy}, total precision: {precision}, total f1: {f1}, total jaccard: {jaccard}')
+    #
+    #     sensitivitys.append(sensitivity)
+    #     specificities.append(specificity)
+    #     accuracies.append(accuracy)
+    #     precisions.append(precision)
+    #     f1s.append(f1)
+    #     jaccards.append(jaccard)
+    #
+    # print(f'sensitivitys: {sensitivitys}')
+    # print(f'specificities: {specificities}')
+    # print(f'accuracies: {accuracies}')
+    # print(f'precisions: {precisions}')
+    # print(f'f1s: {f1s}')
+    # print(f'jaccards: {jaccards}')
+
 
 if __name__ == '__main__':
     set_logger(log, args.v, args.log_level, args.logfile)
@@ -275,7 +324,6 @@ if __name__ == '__main__':
     # Create the output directory if not inserted as input
     if args.output_dir is None:
         output_dir = os.path.join(os.path.dirname(args.input_DSM_test_tiles_dir), 'predictions')
-        log.info(f"Output directory is not inserted, the output will be saved in {output_dir}")
     else:
         output_dir = args.output_dir
 
@@ -286,5 +334,8 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_full_test(rasters_test_path, masks_test_path, output_folder, model_path, save_array, calc_each_samp)
+
+
+
 
     log.info(f"Script execution time: {time.time() - start_time} seconds")

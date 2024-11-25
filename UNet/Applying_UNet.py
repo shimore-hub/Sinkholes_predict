@@ -41,7 +41,7 @@ DESCRIPTION = """
 Script for testing a trained U-Net model on DSM and mask tiles, and evaluating its performance.
 
 using example:
-./Applying_UNet.py DSM_path Model_path -Os Shp_path -tox 100 -toy 100 -l INFO -th 0.9 -Ote True 
+./Applying_UNet.py DSM_path Model_path -Os Shp_path -tox 128 -toy 128 -l INFO -th 0.5 -Ote True 
 """
 
 # Setting commandline argument using a parser
@@ -66,6 +66,7 @@ parser.add_argument('-Otd', '--output_tiles_dir', default=None, help='Output DSM
 parser.add_argument('-Ote', '--output_tiles_exist', default=False, help='Does the Output DSM Tiles exist or not? ')
 parser.add_argument('-Opd', '--output_pred_dir', default=None, help='Output Prediction Tiles Directory '
                                                                     'Path (Default: Input Directory)')
+parser.add_argument('-Oprob', '--output_prob', default=None, help='Output Probability Tiles Directory')
 parser.add_argument('-Om', '--output_mosaic', default=None, help='Output Mosaic File Path '
                                                                  '(Default: Input Directory)')
 parser.add_argument('-Os', '--output_shp', default=None, help='Path to the output shapefile '
@@ -160,7 +161,7 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
             # Read the tile data
             tile = raster_band.ReadAsArray(x_offset, y_offset, x_tile_size, y_tile_size)
             # if the mean of values in the tile is smaller than -32700 then dont save this tile
-            if np.mean(tile) < -32700:
+            if np.min(tile) < -500:
                 continue
 
 
@@ -181,6 +182,12 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
             ))
             tile_dataset.SetProjection(projection)
             tile_dataset.GetRasterBand(1).WriteArray(tile)
+
+            band = tile_dataset.GetRasterBand(1)
+            band.WriteArray(tile)
+
+            # Set the NoData value for the output tile
+            band.SetNoDataValue(-32767)
 
             # Save and close the tile dataset
             tile_dataset.FlushCache()
@@ -221,7 +228,7 @@ def predict_mask(raster_file, checkpoint_path, device):
         pred_mask = pred_mask.cpu().numpy()
         pred_mask = np.squeeze(pred_mask, axis=0)  # Remove batch dimension
         # make a mask of 0s and 1s
-        pred_mask = np.where(pred_mask >= threshold, 1, 0)
+        # pred_mask = np.where(pred_mask >= threshold, 1, 0)
 
     # print(f'pred_mask shape: {pred_mask.shape}')
 
@@ -362,6 +369,12 @@ if __name__ == '__main__':
         output_tiles_dir = args.output_tiles_dir
     log.info(f'Output Tiles Directory: {output_tiles_dir}')
 
+    if args.output_prob is None:
+        output_prob = os.path.join(os.path.dirname(input_raster_path), 'probabilities')
+    else:
+        output_prob = args.output_prob
+    log.info(f'Output Probability Directory: {output_prob}')
+
     # if the output_pred_dir directory is not provided, set it to the directory of the input raster
     if args.output_pred_dir is None:
         output_pred_dir = os.path.join(os.path.dirname(input_raster_path), 'predictions')
@@ -406,13 +419,19 @@ if __name__ == '__main__':
         if tile_file.endswith('.tif'):
             # print(tile_file)
             tile_path = os.path.join(output_tiles_dir, tile_file)
-            pred_mask = predict_mask(tile_path, model_path, device)
-            pred_mask = pred_mask.squeeze()
+            prob_mask = predict_mask(tile_path, model_path, device)
+            prob_mask = prob_mask.squeeze()
+            output_file = os.path.join(output_prob, tile_file)
+
+            array2raster(tile_path, prob_mask, output_file, gdal.Open(tile_path).GetGeoTransform(),
+                         gdal.Open(tile_path).GetProjection())
+
+            pred_mask = np.where(prob_mask >= threshold, 1, 0)
             output_file = os.path.join(output_pred_dir, tile_file)
-            # save_mask_as_raster(pred_mask, tile_path, output_file)
 
             array2raster(tile_path, pred_mask, output_file, gdal.Open(tile_path).GetGeoTransform(),
                          gdal.Open(tile_path).GetProjection())
+
 
     print(2)
     # Combining the tiles to a single raster based on the original raster

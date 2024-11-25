@@ -19,7 +19,7 @@ formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(leveln
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
 # Default parameters for logging
-VERBOSE = False  # Turn to True for printing to terminal
+VERBOSE = True  # Turn to True for printing to terminal
 LOG_FILE = None  # Set a file name for logging into a file
 LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
 log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
@@ -167,8 +167,8 @@ if __name__ == '__main__':
     # tiles size and overlap
     tile_size_x = args.tile_size_x
     tile_size_y = args.tile_size_y
-    overlap_x = args.overlap_size_x
-    overlap_y = args.overlap_size_y
+    overlap_x = int(args.overlap_size_x)
+    overlap_y = int(args.overlap_size_y)
 
     # creating tiles
     log.info('Starting to divide DSM raster into tiles.')
@@ -192,9 +192,9 @@ if __name__ == '__main__':
     st.normalize_rasters_in_folder(output_empty_DSM_tiles_dir, DSM_norm_empty)
     log.info('Completed normalizing empty DSM tiles.')
 
-    log.info('Splitting data into training and testing sets.')
-    st.split_data_and_masks(DSM_norm_notempty, output_notempty_mask_tiles_dir, args.train_fraction)
-    log.info('Completed splitting data into training and testing sets.')
+    # log.info('Splitting data into training and testing sets.')
+    # st.split_data_and_masks(DSM_norm_notempty, output_notempty_mask_tiles_dir, args.train_fraction)
+    # log.info('Completed splitting data into training and testing sets.')
 
     log.info('Script completed successfully.')
     log.info(f'Total execution time: {time.time() - start_time} seconds.')

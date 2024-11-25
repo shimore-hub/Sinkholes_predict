@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score, accuracy_score
+import numpy as np
 
 class conv_block(nn.Module):
     def __init__(self, in_c, out_c):
@@ -130,6 +132,7 @@ def train(model, loader, optimizer, loss_fn, device):
 
         optimizer.zero_grad()
         y_pred = model(x)
+
         loss = loss_fn(y_pred, y)
         loss.backward()
         optimizer.step()
@@ -138,8 +141,27 @@ def train(model, loader, optimizer, loss_fn, device):
     epoch_loss = epoch_loss/len(loader)
     return epoch_loss
 
-def evaluate(model, loader, loss_fn, device):
+# def evaluate(model, loader, loss_fn, device):
+#     epoch_loss = 0.0
+#
+#     model.eval()
+#     with torch.no_grad():
+#         for x, y in loader:
+#             x = x.to(device, dtype=torch.float32)
+#             y = y.to(device, dtype=torch.float32)
+#
+#             y_pred = model(x)
+#             loss = loss_fn(y_pred, y)
+#             epoch_loss += loss.item()
+#
+#         epoch_loss = epoch_loss/len(loader)
+#     return epoch_loss
+
+
+def evaluate(model, loader, loss_fn, device, threshold=0.5):
     epoch_loss = 0.0
+    all_preds = []
+    all_labels = []
 
     model.eval()
     with torch.no_grad():
@@ -151,8 +173,41 @@ def evaluate(model, loader, loss_fn, device):
             loss = loss_fn(y_pred, y)
             epoch_loss += loss.item()
 
-        epoch_loss = epoch_loss/len(loader)
-    return epoch_loss
+            # Apply sigmoid to ensure output is in range [0, 1]
+            y_pred = torch.sigmoid(y_pred)
+
+            # Assuming binary classification, apply threshold
+            y_pred_binary = (y_pred > threshold).float()
+
+            # Store predictions and true labels for metrics calculation
+            all_preds.append(y_pred_binary.cpu().numpy())
+            all_labels.append(y.cpu().numpy())
+
+    # Calculate average loss
+    epoch_loss = epoch_loss / len(loader)
+
+    # Concatenate predictions and labels lists (flatten them)
+    all_preds = np.concatenate(all_preds).flatten()
+    all_labels = np.concatenate(all_labels).flatten()
+
+    # Binarize the labels and predictions if they are not binary already
+    all_preds = (all_preds > 0.5).astype(int)  # Ensure binary values (0 or 1)
+    all_labels = (all_labels > 0.5).astype(int)  # Ensure binary values (0 or 1)
+
+    # Calculate metrics
+    precision = precision_score(all_labels, all_preds)
+    recall = recall_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds)
+    accuracy = accuracy_score(all_labels, all_preds)
+
+    # Sensitivity (Recall) and Specificity calculation using confusion matrix
+    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
+    sensitivity = tp / (tp + fn)
+    specificity = tn / (tn + fp)
+
+    # Return loss and metrics
+    return epoch_loss, precision, recall, f1, accuracy, sensitivity, specificity
+
 
 
 if __name__ == "__main__":
