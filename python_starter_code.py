@@ -15,7 +15,7 @@ formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(leveln
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
 
-# Default parameers for logging
+# Default parameters for logging
 VERBOSE = False  # Turn to True for printing to terminal
 LOG_FILE = None  # Set a file name for logging into a file 
 LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
