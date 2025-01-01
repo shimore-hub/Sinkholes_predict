@@ -1,0 +1,29 @@
+ 
+├── data
+│   └── Creating_Training_Data.py
+├── functions
+│   ├── Applying_UNet.py
+│   ├── SinkTools2.py
+│   └── validate_tiles.py
+├── notebooks
+│   ├── Applying_UNet.ipynb
+│   ├── Creating_Training_Data.ipynb
+│   ├── UNet_test.ipynb
+│   ├── UNet_train.ipynb
+│   └── commands.ipynb
+├── testing
+│   ├── UNet_test_new.py
+│   ├── apply_threshold_and_test.py
+│   ├── combine_tiles.sh
+│   ├── group_and_combine_prob_tiles.py
+│   └── run_unet_pipeline.sh
+├── training
+│   ├── UNet_train.py
+│   ├── data.py
+│   ├── loss.py
+│   ├── model.py
+│   └── utils.py
+└── txt_files
+    └── UNet_test_new_guide.txt
+
+

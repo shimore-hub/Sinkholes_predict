@@ -1,0 +1,82 @@
+UNet_Test_new Guide
+
+
+This script is designed to:
+
+* Test a trained U-Net model on DSM and mask tiles.
+* Evaluate model performance and generate metrics.
+* Save probability maps and optionally binary thresholded rasters.
+* Plot and save performance metrics.
+
+
+
+Requirements:
+
+* Python Environment: Ensure Python 3.10 or compatible environment is installed.
+
+* Dependencies:
+    - SinkTools2, tqdm, torch, gdal, rasterio, numpy, pandas, scikit-learn, matplotlib.
+    - A build_unet function (from origin_model.py) defining the U-Net architecture.
+* Files:
+    - Trained U-Net model file.
+    - Directories of test DSM tiles and corresponding mask tiles (aligned).
+
+* Output Directory: A directory where outputs like probabilities, metrics, and plots will be saved.
+
+
+
+Command-Line Usage:
+
+* Run the script using the terminal with the following syntax:
+
+    ./UNet_test.py DSM_tiles_dir mask_tiles_dir model_path -O output_dir [OPTIONS]
+
+* Positional Arguments
+
+    - DSM_tiles_dir: Path to the directory containing DSM test tiles.
+    - mask_tiles_dir: Path to the directory containing ground-truth mask tiles.
+    - model_path: Path to the trained U-Net model file.
+
+* Optional Arguments
+
+    -O, --output_dir: Path to save output files (default: probabilities folder above DSM_tiles_dir).
+    -tsx, --tile_size_x: Tile width for resizing (default: 256).
+    -tsy, --tile_size_y: Tile height for resizing (default: 256).
+    -sa, --save_array: Save probability arrays for predictions (default: True).
+    -cs, --calc_each_samp: Calculate statistics for individual samples (default: False).
+    -th, --threshold: Apply a specific threshold for binary predictions (default: None).
+    -v: Enable verbose mode for console logging (default: False).
+    -l, --log_level: Set logging level (INFO, DEBUG, etc.; default: CRITICAL).
+    --logfile: Save logs to a specific file (default: None).
+
+
+Steps:
+
+* Prepare Input Data:
+    - Ensure DSM and mask tiles are properly aligned and named consistently (e.g., tile1.tif in   DSM  matches tile1.tif in masks).
+    - Verify file format (GeoTIFF).
+* Execute Script:
+    - Example command:
+        ./UNet_test.py /path/to/DSM_tiles /path/to/mask_tiles /path/to/model.pth -O /path/to/output -th 0.5 -v -l INFO
+    - This tests the U-Net model, saves probability maps, applies a 0.5 threshold for binary predictions, and logs details.
+
+* Monitor Logs:
+    - Logs provide execution details, file processing status, and warnings about missing files or  mismatched dimensions.
+* Review Outputs:
+    - Probability Maps: Saved as GeoTIFF files in the output directory.
+    - Metrics: Includes precision, recall, F1-score, accuracy, etc., saved in metrics.csv.
+    - Plots: A PDF file (metrics_plot.pdf) showing performance metrics versus thresholds.
+
+
+Additional Notes:
+
+* Resizing: Tiles are resized to the specified dimensions (tile_size_x, tile_size_y), defaulting to 256x256.
+* CUDA Support: The script utilizes GPU if available; otherwise, it defaults to CPU.
+* Threshold: If specified, binary rasters are created and saved in the output directory.
+             Common Issues
+* Missing Dependencies: Ensure all Python packages are installed.
+* Misaligned Files: Confirm DSM and mask files are named and sized correctly.
+* Model Errors: Ensure the model architecture matches the training process.
+
+Let me know if you'd like me to clarify or expand on any part!
+nirgutman013@gmail.com
