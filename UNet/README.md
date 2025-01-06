@@ -1,4 +1,4 @@
-<div style="text-align: justify;">
+<div style="text-align: Left;">
   <h1>Sinkhole Mapping with U-Net</h1>
   <p>
     This repository contains code and resources for mapping sinkholes using a U-Net deep learning model. The model is designed to automate the process of identifying sinkholes in the Dead Sea region using remote sensing data.
