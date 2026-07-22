@@ -196,20 +196,23 @@ def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size
     # Close the original raster
     raster = None
 
-def predict_mask(raster_file, checkpoint_path, device):
-    """
-    The predict_mask function loads a pre-trained U-Net model from a checkpoint file, processes a raster image to the appropriate input size, performs a forward pass through the model to predict a mask, and returns a binary mask indicating the areas of interest.
-    :param raster_file: the tif tile file of DEM
-    :param checkpoint_path: saved model path
-    :param device: cuda/cpu
-    :return:
-    """
-    """ Load model """
+def load_model(checkpoint_path, device):
+    """Load the U-Net model once and return it ready for inference."""
     model = build_unet()
     model = model.to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()
+    return model
 
+
+def predict_mask(raster_file, model, device):
+    """
+    The predict_mask function processes a raster image to the appropriate input size, performs a forward pass through the model to predict a mask, and returns a binary mask indicating the areas of interest.
+    :param raster_file: the tif tile file of DEM
+    :param model: pre-loaded U-Net model
+    :param device: cuda/cpu
+    :return:
+    """
     """ Reading raster """
     raster = gdal.Open(raster_file)
     raster = raster.ReadAsArray()
@@ -219,6 +222,7 @@ def predict_mask(raster_file, checkpoint_path, device):
     raster = raster.astype(np.float32)
     raster = torch.from_numpy(raster)
     raster = raster.unsqueeze(0)  # Add batch dimension
+    raster = raster.to(device)
     raster = F.interpolate(raster.unsqueeze(0), size=(new_height, new_width), mode='bilinear', align_corners=False)
 
     """ Prediction """
@@ -353,7 +357,7 @@ def raster_to_vector(input_raster_path, output_vector_path):
 
 if __name__ == '__main__':
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
     set_logger(log, args.v, args.log_level, args.logfile)
 
@@ -415,22 +419,24 @@ if __name__ == '__main__':
     save_array = False
     calc_each_samp = False
 
+    model = load_model(model_path, device)
+
     for tile_file in tqdm.tqdm(os.listdir(output_tiles_dir)):
         if tile_file.endswith('.tif'):
             # print(tile_file)
             tile_path = os.path.join(output_tiles_dir, tile_file)
-            prob_mask = predict_mask(tile_path, model_path, device)
+            prob_mask = predict_mask(tile_path, model, device)
             prob_mask = prob_mask.squeeze()
-            output_file = os.path.join(output_prob, tile_file)
 
-            array2raster(tile_path, prob_mask, output_file, gdal.Open(tile_path).GetGeoTransform(),
-                         gdal.Open(tile_path).GetProjection())
+            tile_ds = gdal.Open(tile_path)
+            geotransform = tile_ds.GetGeoTransform()
+            projection = tile_ds.GetProjection()
+            tile_ds = None
+
+            array2raster(tile_path, prob_mask, os.path.join(output_prob, tile_file), geotransform, projection)
 
             pred_mask = np.where(prob_mask >= threshold, 1, 0)
-            output_file = os.path.join(output_pred_dir, tile_file)
-
-            array2raster(tile_path, pred_mask, output_file, gdal.Open(tile_path).GetGeoTransform(),
-                         gdal.Open(tile_path).GetProjection())
+            array2raster(tile_path, pred_mask, os.path.join(output_pred_dir, tile_file), geotransform, projection)
 
 
     print(2)
