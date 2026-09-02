@@ -2,3 +2,26 @@
 .venv/
 __pycache__/
 
+
+# Large rasters & data folders
+*.tif
+*.ers
+*.dem
+DATA/
+data/
+
+# Model weights
+*.pth
+*.pt
+
+# GIS outputs & archives
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip
+
+# Logs
+*.log
+predict_new_intf_ran_1chn.py

@@ -1,200 +1,64 @@
-#!/usr/bin/env python3.10
-
-# by Nir Gutman (nirgutman013@gmail.com)
+#!/usr/bin/env python3
+# Optimized for Windowed Streaming Inference (OOM-Safe)
+# Original code by Nir Gutman, Adapted for large-scale streaming
 
 import os
-from osgeo import gdal
-import os
-from sklearn.metrics import accuracy_score, f1_score, jaccard_score, precision_score, recall_score
-import matplotlib.pyplot as plt
-import SinkTools2 as st
-import tqdm
-import torch
-from osgeo import gdal, ogr
-import numpy as np
-import torch.nn.functional as F
-from model import build_unet
+import sys
 import time
-import SinkTools2 as st
 import argparse
 import logging
 from logging.handlers import TimedRotatingFileHandler
-import sys
-import subprocess
-import tempfile
+import tqdm
+import torch
+import numpy as np
+import rasterio
+from rasterio.windows import Window
+from osgeo import gdal, ogr
+from model import build_unet
+import SinkTools2 as st
 
 start_time = time.time()
 
-# Auxiliary parameters for logging
 _LOG_LEVEL_STRINGS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
-formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
+formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | Sinkhole_UNet_Inference | %(levelname)s | %(message)s',
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
-# Default parameters for logging
-VERBOSE = True  # Turn to True for printing to terminal
-LOG_FILE = None  # Set a file name for logging into a file
-LOG_LEVEL = 'CRITICAL'  # Change to any of the _LOG_LEVEL_STRINGS values. See documentation of built-in logging module
-log = logging.getLogger('PROJECTNAME')  # Replace with the name of the project or application
-log.setLevel(LOG_LEVEL)  # set at default log level
+VERBOSE = True
+LOG_FILE = None
+LOG_LEVEL = 'INFO'
+log = logging.getLogger('Sinkhole_UNet_Inference')
+log.setLevel(LOG_LEVEL)
 
 DESCRIPTION = """
-Script for testing a trained U-Net model on DSM and mask tiles, and evaluating its performance.
-
-using example:
-./Applying_UNet.py DSM_path Model_path -Os Shp_path -tox 128 -toy 128 -l INFO -th 0.5 -Ote True 
+Optimized Script for testing a trained U-Net model on large DSM files.
+Uses Windowed Streaming to prevent OOM errors and avoid intermediate tile files.
 """
 
-# Setting commandline argument using a parser
-parser = argparse.ArgumentParser(
-    formatter_class=argparse.RawDescriptionHelpFormatter,
-    description=DESCRIPTION,
-    epilog='''Created by Nir Gutman (nirgutman013@gmail.com), 2024''')
-# arguments for logging
-parser.add_argument('-v', help='verbose - print messages to screen?', action='store_true', default=VERBOSE)
-parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL,
-                    help=f"Log level (Default: {LOG_LEVEL}). see Python's Logging module for more details")
-parser.add_argument('--logfile', metavar='log file name', help='log to file', default=LOG_FILE)
-# arguments for a config file
-parser.add_argument('-c', '--configfile', default=None, help='Config file.')
-parser.add_argument('-tsx', '--tile_size_x', default=256, help='Tile Size X')
-parser.add_argument('-tsy', '--tile_size_y', default=256, help='Tile Size Y')
-parser.add_argument('-tox', '--tile_overlap_x', default=0, help='Tile Overlap X')
-parser.add_argument('-toy', '--tile_overlap_y', default=0, help='Tile Overlap Y')
-parser.add_argument('-th', '--threshold', default=0.5, help='Threshold for binary mask prediction')
-parser.add_argument('-Otd', '--output_tiles_dir', default=None, help='Output DSM Tiles Directory Path '
-                                                                     '(Default: Input Directory)')
-parser.add_argument('-Ote', '--output_tiles_exist', default=False, help='Does the Output DSM Tiles exist or not? ')
-parser.add_argument('-Opd', '--output_pred_dir', default=None, help='Output Prediction Tiles Directory '
-                                                                    'Path (Default: Input Directory)')
-parser.add_argument('-Oprob', '--output_prob', default=None, help='Output Probability Tiles Directory')
-parser.add_argument('-Om', '--output_mosaic', default=None, help='Output Mosaic File Path '
-                                                                 '(Default: Input Directory)')
-parser.add_argument('-Os', '--output_shp', default=None, help='Path to the output shapefile '
-                                                              '(Default: Input Directory)')
-
-# ADD ANY OTHER ARGUMENTS HERE
-parser.add_argument('input_DSM_path', help='Path to the DSM')
+parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=DESCRIPTION)
+parser.add_argument('-v', help='verbose', action='store_true', default=VERBOSE)
+parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL)
+parser.add_argument('--logfile', default=LOG_FILE)
+parser.add_argument('-tsx', '--tile_size_x', default=256, type=int)
+parser.add_argument('-tsy', '--tile_size_y', default=256, type=int)
+parser.add_argument('-th', '--threshold', default=0.5, type=float)
+parser.add_argument('-b', '--batch_size', default=4, type=int, help='Batch size for inference')
+parser.add_argument('-Om', '--output_mosaic', default=None, help='Output Mosaic File Path')
+parser.add_argument('-Os', '--output_shp', default=None, help='Path to the output shapefile')
+parser.add_argument('input_DSM_path', help='Path to the DSM (.ers file)')
 parser.add_argument('Model_Path', help='Path to the trained model')
 
-
-
-
-
-###############################################################################
-def set_logger(log, verbose=VERBOSE, log_level=LOG_LEVEL, logfile=LOG_FILE):
-    """ A function for setting the logger.
-    log: The logger needed to be set. Typically, set this log at the top of the file with logging.get(LOGGERNAME).
-    verbose: True (print to screen) or False (do not print to screen)
-    log_level: A valid logging level ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG')
-    logfile: A file name (including path). The file is a daily file and for long runs will change at midnight. See logging documentation for TimedRotatingFileHandler
-    """
-
+def set_logger(log, verbose, log_level, logfile):
     log.setLevel(log_level)
     if verbose:
-        # create console handler
         ch = logging.StreamHandler(sys.stdout)
         ch.setLevel(log_level)
         ch.setFormatter(formatter)
-        if logging.StreamHandler not in [h.__class__ for h in log.handlers]:
-            log.addHandler(ch)
-        else:
-            log.warning('log Stream handler already applied.')
+        log.addHandler(ch)
     if logfile:
-        # create file handler
-        fh = TimedRotatingFileHandler(logfile,
-                                      when='midnight',
-                                      utc=True)
+        fh = TimedRotatingFileHandler(logfile, when='midnight', utc=True)
         fh.setLevel(log_level)
         fh.setFormatter(formatter)
-        if TimedRotatingFileHandler not in [h.__class__ for h in log.handlers]:
-            log.addHandler(fh)
-        else:
-            log.warning('Log file handler already applied.')
-        log.info(f'Log file is: {logfile}')
-    else:
-        log.debug('No Log file was set')
-
-
-def normalize_array(array):
-    """Normalize the array values to the range [0, 1]."""
-    array_min = array.min()
-    array_max = array.max()
-    if array_max - array_min == 0:
-        return array  # Avoid division by zero if all values are the same
-    normalized_array = (array - array_min) / (array_max - array_min)
-    return normalized_array
-
-def divide_raster_to_tiles(input_raster_path, output_dir, tile_size_x, tile_size_y, overlap_x=0, overlap_y=0):
-    # Open the input raster
-    raster = gdal.Open(input_raster_path)
-    if raster is None:
-        print(f"Unable to open input raster {input_raster_path}")
-        return
-
-    # Get raster information
-    raster_band = raster.GetRasterBand(1)
-    xsize = raster.RasterXSize
-    ysize = raster.RasterYSize
-    geotransform = raster.GetGeoTransform()
-    projection = raster.GetProjection()
-
-    # Calculate the number of tiles in x and y directions, considering overlap
-    x_tiles = (xsize + tile_size_x - 1) // (tile_size_x - overlap_x)
-    y_tiles = (ysize + tile_size_y - 1) // (tile_size_y - overlap_y)
-
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    for i in range(x_tiles):
-        for j in range(y_tiles):
-            # Calculate the offsets and tile size
-            x_offset = i * (tile_size_x - overlap_x)
-            y_offset = j * (tile_size_y - overlap_y)
-            x_tile_size = min(tile_size_x, xsize - x_offset)
-            y_tile_size = min(tile_size_y, ysize - y_offset)
-
-            # Ensure that the tile dimensions are positive
-            if x_tile_size <= 0 or y_tile_size <= 0:
-                continue
-
-            # Read the tile data
-            tile = raster_band.ReadAsArray(x_offset, y_offset, x_tile_size, y_tile_size)
-            # if the mean of values in the tile is smaller than -32700 then dont save this tile
-            if np.min(tile) < -500:
-                continue
-
-
-            # Normalize the tile data
-            tile = normalize_array(tile)
-
-            # Create a new raster dataset for the tile
-            driver = gdal.GetDriverByName('GTiff')
-            output_tile_path = os.path.join(output_dir, f'tile_{i}_{j}.tif')
-            tile_dataset = driver.Create(output_tile_path, x_tile_size, y_tile_size, 1, gdal.GDT_Float32)
-            tile_dataset.SetGeoTransform((
-                geotransform[0] + x_offset * geotransform[1],
-                geotransform[1],
-                0,
-                geotransform[3] + y_offset * geotransform[5],
-                0,
-                geotransform[5]
-            ))
-            tile_dataset.SetProjection(projection)
-            tile_dataset.GetRasterBand(1).WriteArray(tile)
-
-            band = tile_dataset.GetRasterBand(1)
-            band.WriteArray(tile)
-
-            # Set the NoData value for the output tile
-            band.SetNoDataValue(-32767)
-
-            # Save and close the tile dataset
-            tile_dataset.FlushCache()
-            tile_dataset = None
-
-    # Close the original raster
-    raster = None
+        log.addHandler(fh)
 
 def load_model(checkpoint_path, device):
     """Load the U-Net model once and return it ready for inference."""
@@ -204,249 +68,148 @@ def load_model(checkpoint_path, device):
     model.eval()
     return model
 
-
-def predict_mask(raster_file, model, device):
+def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4, tile_size=256, threshold=0.5):
     """
-    The predict_mask function processes a raster image to the appropriate input size, performs a forward pass through the model to predict a mask, and returns a binary mask indicating the areas of interest.
-    :param raster_file: the tif tile file of DEM
-    :param model: pre-loaded U-Net model
-    :param device: cuda/cpu
-    :return:
+    Windowed streaming inference: reads from disk, predicts, and writes back 
+    in small batches to keep RAM usage strictly below 2GB.
     """
-    """ Reading raster """
-    raster = gdal.Open(raster_file)
-    raster = raster.ReadAsArray()
+    log.info(f"Starting Windowed Inference on {input_dem_path}")
+    
+    with rasterio.open(input_dem_path) as src:
+        profile = src.profile
+        profile.update(dtype=rasterio.uint8, count=1, compress='lzw', nodata=0, driver='GTiff')
+        
+        with rasterio.open(output_mask_path, 'w', **profile) as dst:
+            height, width = src.height, src.width
+            batch_windows, batch_data = [], []
+            
+            total_tiles = ((height + tile_size - 1) // tile_size) * ((width + tile_size - 1) // tile_size)
+            
+            with tqdm.tqdm(total=total_tiles, desc="Predicting Tiles") as pbar:
+                for row_off in range(0, height, tile_size):
+                    for col_off in range(0, width, tile_size):
+                        
+                        window = Window(col_off, row_off, tile_size, tile_size)
+                        tile = src.read(1, window=window)
+                        
+                        # Nir's filter: skip tiles with NoData values completely
+                        if np.min(tile) < -500:
+                            pbar.update(1)
+                            continue
+                            
+                        # Padding for edge tiles
+                        if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
+                            padded_tile = np.zeros((tile_size, tile_size), dtype=tile.dtype)
+                            padded_tile[:tile.shape[0], :tile.shape[1]] = tile
+                            tile = padded_tile
+                            
+                        # Local Normalization (Nir's method)
+                        tile_min, tile_max = tile.min(), tile.max()
+                        if tile_max - tile_min == 0:
+                            norm_tile = np.zeros_like(tile, dtype=np.float32)
+                        else:
+                            norm_tile = (tile - tile_min) / (tile_max - tile_min)
+                            
+                        batch_windows.append(window)
+                        batch_data.append(norm_tile)
+                        
+                        # Process batch
+                        if len(batch_data) == batch_size:
+                            tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
+                                
+                            with torch.no_grad():
+                                preds = model(tensor_batch)
+                                preds = torch.sigmoid(preds)
+                                preds = preds.cpu().numpy().squeeze(1)
+                                    
+                                for i, win in enumerate(batch_windows):
+                                    valid_h = min(tile_size, height - win.row_off)
+                                    valid_w = min(tile_size, width - win.col_off)
+                                    
+                                    prob_mask = preds[i, :valid_h, :valid_w]
+                                    pred_mask = np.where(prob_mask >= threshold, 1, 0).astype(np.uint8)
+                                    
+                                    out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
+                                    dst.write(pred_mask, 1, window=out_win)
+                                    
+                                batch_windows, batch_data = [], []
+                        pbar.update(1)
 
-    """ Resize raster """
-    new_height, new_width = 256, 256
-    raster = raster.astype(np.float32)
-    raster = torch.from_numpy(raster)
-    raster = raster.unsqueeze(0)  # Add batch dimension
-    raster = raster.to(device)
-    raster = F.interpolate(raster.unsqueeze(0), size=(new_height, new_width), mode='bilinear', align_corners=False)
+                if len(batch_data) > 0:
+                    tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
+                    
+                    with torch.no_grad():
+                        preds = model(tensor_batch)
+                        preds = torch.sigmoid(preds)
+                        preds = preds.cpu().numpy().squeeze(1)
+                        
+                    for i, win in enumerate(batch_windows):
+                        valid_h = min(tile_size, height - win.row_off)
+                        valid_w = min(tile_size, width - win.col_off)
+                        
+                        prob_mask = preds[i, :valid_h, :valid_w]
+                        pred_mask = np.where(prob_mask >= threshold, 1, 0).astype(np.uint8)
 
-    """ Prediction """
-    with torch.no_grad():
-        pred_mask = model(raster)
-        pred_mask = torch.sigmoid(pred_mask)
-        pred_mask = pred_mask.cpu().numpy()
-        pred_mask = np.squeeze(pred_mask, axis=0)  # Remove batch dimension
-        # make a mask of 0s and 1s
-        # pred_mask = np.where(pred_mask >= threshold, 1, 0)
+                        out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
+                        dst.write(pred_mask, 1, window=out_win)
 
-    # print(f'pred_mask shape: {pred_mask.shape}')
-
-    return pred_mask
-
-
-def save_mask_as_raster(pred_mask, raster_file, output_file):
-    """
-    The save_mask_as_raster function saves a binary mask as a raster file.
-    :param pred_mask: the binary mask
-    :param raster_file: the tif tile file of DEM
-    :param output_file: the output file path
-    :return:
-    """
-    raster = gdal.Open(raster_file)
-    driver = gdal.GetDriverByName('GTiff')
-    output_raster = driver.Create(output_file, raster.RasterXSize, raster.RasterYSize, 1, gdal.GDT_Byte)
-    output_raster.SetGeoTransform(raster.GetGeoTransform())
-    output_raster.SetProjection(raster.GetProjection())
-    # output_raster.GetRasterBand(1).WriteArray(pred_mask)
-    output_raster.FlushCache()
-    output_raster = None
-
-
-def array2raster(raster_path, array, output_path, geotransform, projection):
-    """
-    Save a NumPy array as a raster file using GDAL.
-
-    Parameters:
-        raster_path (str): Path to the original raster file to use as a template.
-        array (numpy.ndarray): NumPy array containing the data to be saved as a raster.
-        output_path (str): Path to save the raster file.
-        geotransform (tuple): Geotransform parameters (top left x, w-e pixel resolution, rotation, top left y, rotation, n-s pixel resolution).
-        projection (str): Projection in WKT format.
-    """
-    # Ensure the output directory exists
-    output_dir = os.path.dirname(output_path)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"Created directory: {output_dir}")
-
-    # Open the original raster file
-    original_raster = gdal.Open(raster_path)
-
-    # Get the number of rows and columns from the original raster
-    array = np.squeeze(array)
-    rows, cols = array.shape
-
-    # Create the output raster file
-    driver = gdal.GetDriverByName('GTiff')
-    out_raster = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32)
-
-    # Write the array data to the output raster
-    if out_raster is None:
-        print(f"Unable to create output raster {output_path}")
-        return
-    out_band = out_raster.GetRasterBand(1)
-    out_band.WriteArray(array)
-
-    # Set the geotransform and projection
-    out_raster.SetGeoTransform(geotransform)
-    out_raster.SetProjection(projection)
-
-    # Close the output raster file
-    out_band.FlushCache()
-    out_raster = None  # Close the file to ensure data is written
-
-def combine_rasters_with_gdal(folder_path, output_file):
-    # List all .tif files in the folder
-    input_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.tif')]
-
-    # Create a temporary file to hold the input file paths
-    with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt') as temp_file:
-        temp_file_name = temp_file.name
-        temp_file.write("\n".join(input_files))
-
-    # Build the gdal_merge command
-    gdal_merge_command = [
-        'gdal_merge.py',
-        '-o', output_file,
-        '-n', '0',  # NoData value to ignore
-        '-a_nodata', '-32767',  # NoData value to set in the output
-        '-pct',  # Use the maximum value in overlapping regions
-        '--optfile', temp_file_name  # Provide the list of files via optfile
-    ]
-
-    # Execute the command
-    subprocess.run(gdal_merge_command)
-
-    # Cleanup the temporary file
-    os.remove(temp_file_name)
-
+                    batch_windows, batch_data = [], []
 
 def raster_to_vector(input_raster_path, output_vector_path):
-    # Open the input raster
+    log.info("Converting Binary Mosaic to Shapefile...")
     raster = gdal.Open(input_raster_path)
     if raster is None:
-        print(f"Unable to open input raster {input_raster_path}")
+        log.error(f"Unable to open {input_raster_path}")
         return
-
-    # Get raster information
-    xsize = raster.RasterXSize
-    ysize = raster.RasterYSize
-    geotransform = raster.GetGeoTransform()
-    projection = raster.GetProjection()
-
-    # Create a new vector layer
     driver = ogr.GetDriverByName('ESRI Shapefile')
     output_vector = driver.CreateDataSource(output_vector_path)
     layer = output_vector.CreateLayer('output', srs=None)
-
-    # Add a single field to the layer
     layer.CreateField(ogr.FieldDefn('value', ogr.OFTInteger))
-
-    # Rasterize the vector layer
     gdal.RasterizeLayer(raster, [1], layer, options=['ATTRIBUTE=value'])
-
-    # Close the vector layer
     output_vector = None
-###############################################################################
-
 
 if __name__ == '__main__':
-
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     set_logger(log, args.v, args.log_level, args.logfile)
+    
+    if not torch.cuda.is_available():
+        log.warning("WARNING: No GPU detected! PyTorch will use the CPU. This will be very slow.")
 
     log.info(f"Arguments: {args}")
 
     input_raster_path = args.input_DSM_path
     model_path = args.Model_Path
 
-    # if the output_tiles_dir directory is not provided, set it to the directory of the input raster
-    if args.output_tiles_dir is None:
-        output_tiles_dir = os.path.join(os.path.dirname(input_raster_path), 'tiles')
-    else:
-        output_tiles_dir = args.output_tiles_dir
-    log.info(f'Output Tiles Directory: {output_tiles_dir}')
+    output_mosaic = args.output_mosaic if args.output_mosaic else os.path.join(os.path.dirname(input_raster_path), 'mosaic.tif')
+    output_shp = args.output_shp if args.output_shp else os.path.join(os.path.dirname(input_raster_path), 'predictions.shp')
 
-    if args.output_prob is None:
-        output_prob = os.path.join(os.path.dirname(input_raster_path), 'probabilities')
-    else:
-        output_prob = args.output_prob
-    log.info(f'Output Probability Directory: {output_prob}')
-
-    # if the output_pred_dir directory is not provided, set it to the directory of the input raster
-    if args.output_pred_dir is None:
-        output_pred_dir = os.path.join(os.path.dirname(input_raster_path), 'predictions')
-    else:
-        output_pred_dir = args.output_pred_dir
-    log.info(f'Output Prediction Directory: {output_pred_dir}')
-
-    # if the output_mosaic directory is not provided, set it to the directory of the input raster
-    if args.output_mosaic is None:
-        output_mosaic = os.path.join(os.path.dirname(input_raster_path), 'mosaic.tif')
-    else:
-        output_mosaic = args.output_mosaic
     log.info(f'Output Mosaic File: {output_mosaic}')
-
-    # if the output_shp directory is not provided, set it to the directory of the input raster
-    if args.output_shp is None:
-        output_shp = os.path.join(os.path.dirname(input_raster_path), 'predictions.shp')
-    else:
-        output_shp = args.output_shp
     log.info(f'Output Shapefile: {output_shp}')
 
-
-    tile_size_x = int(args.tile_size_x)  # width of each tile in pixels
-    tile_size_y = int(args.tile_size_y)  # height of each tile in pixels
-
-    overlap_x = int(args.tile_overlap_x)  # overlap in x direction in pixels
-    overlap_y = int(args.tile_overlap_y)  # overlap in y direction in pixels
-
-    if args.output_tiles_exist:
-        log.info('Output tiles exist')
-    else:
-        divide_raster_to_tiles(input_raster_path, output_tiles_dir, tile_size_x, tile_size_y, overlap_x, overlap_y)
-
-    # Prediction for each tile
-    # using the pre-trained UNet model to predict the tiles, and save the results as binary tiles
-
-    threshold = float(args.threshold)
-    save_array = False
-    calc_each_samp = False
-
+    log.info('Loading U-Net Model...')
     model = load_model(model_path, device)
 
-    for tile_file in tqdm.tqdm(os.listdir(output_tiles_dir)):
-        if tile_file.endswith('.tif'):
-            # print(tile_file)
-            tile_path = os.path.join(output_tiles_dir, tile_file)
-            prob_mask = predict_mask(tile_path, model, device)
-            prob_mask = prob_mask.squeeze()
+    # Core inference using Windowed Streaming
+    process_raster(
+        input_dem_path=input_raster_path, 
+        output_mask_path=output_mosaic, 
+        model=model, 
+        device=device, 
+        batch_size=args.batch_size, 
+        tile_size=args.tile_size_x, 
+        threshold=args.threshold
+    )
 
-            tile_ds = gdal.Open(tile_path)
-            geotransform = tile_ds.GetGeoTransform()
-            projection = tile_ds.GetProjection()
-            tile_ds = None
-
-            array2raster(tile_path, prob_mask, os.path.join(output_prob, tile_file), geotransform, projection)
-
-            pred_mask = np.where(prob_mask >= threshold, 1, 0)
-            array2raster(tile_path, pred_mask, os.path.join(output_pred_dir, tile_file), geotransform, projection)
-
-
-    print(2)
-    # Combining the tiles to a single raster based on the original raster
-    combine_rasters_with_gdal(output_pred_dir, output_mosaic)
-    print(3)
-    # Binary Mosaic to Shapefile
+    # Vectorization
     raster_to_vector(output_mosaic, output_shp)
+    
+    try:
+        log.info('Converting to polygons and cleaning 0-value polygons...')
+        st.pred2polygons(output_mosaic, output_shp)
+        st.del_0val_polygons(output_shp)
+        log.info('Finished successfully!')
+    except Exception as e:
+        log.error(f"Error during SinkTools2 execution: {e}")
 
-    # converting to polygons
-    st.pred2polygons(output_mosaic, output_shp)
-    st.del_0val_polygons(output_shp)
-
+    log.info(f"Total time: {(time.time() - start_time) / 60:.2f} minutes.")
