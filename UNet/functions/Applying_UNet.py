@@ -13,7 +13,6 @@ import torch
 import numpy as np
 import rasterio
 from rasterio.windows import Window
-from osgeo import gdal, ogr
 from model import build_unet
 import SinkTools2 as st
 
@@ -27,32 +26,13 @@ formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | Sinkhole_UNet_Infer
 VERBOSE = True
 LOG_FILE = None
 LOG_LEVEL = 'INFO'
-TILE_SIZE_X = 256 # Tile size in X direction
-TILE_SIZE_Y = 256 # Tile size in Y direction
+TILE_SIZE = 256 # Tile size in both x and y dimensions (pixels)
 THRESHOLD = 0.5 # Threshold for binary classification
 BATCH_SIZE = 4 # Batch size for inference
 MOSAIC_PATH = None # Output mosaic file path
 SHAPEFILE_PATH = None # Output shapefile path
 log = logging.getLogger('Sinkhole_UNet_Inference')
 log.setLevel(LOG_LEVEL)
-
-DESCRIPTION = """
-Optimized Script for testing a trained U-Net model on large DSM files.
-Uses Windowed Streaming to prevent OOM errors and avoid.
-"""
-
-parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=DESCRIPTION)
-parser.add_argument('-v', help='verbose', action='store_true', default=VERBOSE)
-parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL)
-parser.add_argument('--logfile', default=LOG_FILE)
-parser.add_argument('-tsx', '--tile_size_x', default=TILE_SIZE_X, type=int)
-parser.add_argument('-tsy', '--tile_size_y', default=TILE_SIZE_Y, type=int)
-parser.add_argument('-th', '--threshold', default=THRESHOLD, type=restricted_float, help='Threshold for binary classification')
-parser.add_argument('-b', '--batch_size', default=BATCH_SIZE, type=int, help='Batch size for inference')
-parser.add_argument('-Om', '--output_mosaic', default=MOSAIC_PATH, help='Output Mosaic File Path')
-parser.add_argument('-Os', '--output_shp', default=SHAPEFILE_PATH, help='Path to the output shapefile')
-parser.add_argument('input_DSM_path', help='Path to the DSM (.ers file)')
-parser.add_argument('Model_Path', help='Path to the trained model')
 
 
 def restricted_float(x):
@@ -76,6 +56,24 @@ def restricted_float(x):
     if x <= 0.0 or x > 1.0:
         raise argparse.ArgumentTypeError(f"{x!r} not in range [0.0, 1.0]")
     return x
+
+
+DESCRIPTION = """
+Optimized Script for testing a trained U-Net model on large DSM files.
+Uses Windowed Streaming to prevent OOM errors and avoid memory issues.
+"""
+
+parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=DESCRIPTION)
+parser.add_argument('-v', help='verbose', action='store_true', default=VERBOSE)
+parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL)
+parser.add_argument('--logfile', default=LOG_FILE)
+parser.add_argument('-ts', '--tile_size', default=TILE_SIZE, type=int, help='Tile size (pixels)')
+parser.add_argument('-th', '--threshold', default=THRESHOLD, type=restricted_float, help='Threshold for binary classification')
+parser.add_argument('-b', '--batch_size', default=BATCH_SIZE, type=int, help='Batch size for inference')
+parser.add_argument('-Om', '--output_mosaic', default=MOSAIC_PATH, help='Output Mosaic File Path')
+parser.add_argument('-Os', '--output_shp', default=SHAPEFILE_PATH, help='Path to the output shapefile')
+parser.add_argument('input_DSM_path', help='Path to the DSM (.ers file)')
+parser.add_argument('Model_Path', help='Path to the trained model')
 
     
 def set_logger(log, verbose, log_level, logfile):
@@ -106,9 +104,9 @@ def load_model(checkpoint_path, device):
         torch.nn.Module: The loaded and evaluated U-Net model.
     """
     model = build_unet()
-    model = model.to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model.eval()
+    model = model.to(device) # load model to device (CPU or GPU)
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device)) # load model weights
+    model.eval() # set model to evaluation mode
     return model
 
 def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4, tile_size=256, threshold=0.5):
@@ -129,66 +127,81 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4
     """
     log.info(f"Starting Windowed Inference on {input_dem_path}")
     
+    # Open the input DEM file
     with rasterio.open(input_dem_path) as src:
         profile = src.profile
         profile.update(dtype=rasterio.uint8, count=1, compress='lzw', nodata=0, driver='GTiff')
         
+        # Create the output mask file with the updated profile
         with rasterio.open(output_mask_path, 'w', **profile) as dst:
             height, width = src.height, src.width
+            
+            # Initialize lists to hold the windows and corresponding data
             batch_windows, batch_data = [], []
             
+            # Calculate the total number of tiles for progress tracking
             total_tiles = ((height + tile_size - 1) // tile_size) * ((width + tile_size - 1) // tile_size)
             
+            # Create a progress tracking bar
             with tqdm.tqdm(total=total_tiles, desc="Predicting Tiles") as pbar:
+                # Iterate over the raster in tiles
                 for row_off in range(0, height, tile_size):
                     for col_off in range(0, width, tile_size):
                         
+                        # Define the window for the current tile and read the data
                         window = Window(col_off, row_off, tile_size, tile_size)
                         tile = src.read(1, window=window)
                         
-                        # Nir's filter: skip tiles with NoData values completely
+                        # Skip tiles with NoData values completely
                         if np.min(tile) < -500:
                             pbar.update(1)
                             continue
                             
-                        # Padding for edge tiles
+                        # Padding for edge tiles in case tile is too small
                         if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
                             padded_tile = np.zeros((tile_size, tile_size), dtype=tile.dtype)
                             padded_tile[:tile.shape[0], :tile.shape[1]] = tile
                             tile = padded_tile
                             
-                        # Local Normalization (Nir's method)
+                        # Normalization
                         tile_min, tile_max = tile.min(), tile.max()
                         if tile_max - tile_min == 0:
                             norm_tile = np.zeros_like(tile, dtype=np.float32)
                         else:
                             norm_tile = (tile - tile_min) / (tile_max - tile_min)
-                            
+                        
+                        # Append the current window and normalized tile to the batch lists
                         batch_windows.append(window)
                         batch_data.append(norm_tile)
                         
                         # Process batch
                         if len(batch_data) == batch_size:
                             tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
-                                
+
+                            # Perform inference without tracking gradients  
                             with torch.no_grad():
                                 preds = model(tensor_batch)
                                 preds = torch.sigmoid(preds)
                                 preds = preds.cpu().numpy().squeeze(1)
-                                    
+
+                                # Write predictions to the output raster    
                                 for i, win in enumerate(batch_windows):
                                     valid_h = min(tile_size, height - win.row_off)
                                     valid_w = min(tile_size, width - win.col_off)
                                     
+                                    # Apply threshold to get binary mask
                                     prob_mask = preds[i, :valid_h, :valid_w]
                                     pred_mask = np.where(prob_mask >= threshold, 1, 0).astype(np.uint8)
                                     
+                                    # Write the binary mask to the output raster
                                     out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
                                     dst.write(pred_mask, 1, window=out_win)
-                                    
+
+                                # Reset batch lists for the next set of tiles    
                                 batch_windows, batch_data = [], []
                         pbar.update(1)
 
+                # Process any remaining tiles in the batch after the loop
                 if len(batch_data) > 0:
                     tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
                     
@@ -209,18 +222,6 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4
 
                     batch_windows, batch_data = [], []
 
-def raster_to_vector(input_raster_path, output_vector_path):
-    log.info("Converting Binary Mosaic to Shapefile...")
-    raster = gdal.Open(input_raster_path)
-    if raster is None:
-        log.error(f"Unable to open {input_raster_path}")
-        return
-    driver = ogr.GetDriverByName('ESRI Shapefile')
-    output_vector = driver.CreateDataSource(output_vector_path)
-    layer = output_vector.CreateLayer('output', srs=None)
-    layer.CreateField(ogr.FieldDefn('value', ogr.OFTInteger))
-    gdal.RasterizeLayer(raster, [1], layer, options=['ATTRIBUTE=value'])
-    output_vector = None
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -251,13 +252,11 @@ if __name__ == '__main__':
         model=model, 
         device=device, 
         batch_size=args.batch_size, 
-        tile_size=args.tile_size_x, 
+        tile_size=args.tile_size, 
         threshold=args.threshold
     )
 
-    # Vectorization
-    raster_to_vector(output_mosaic, output_shp)
-    
+
     try:
         log.info('Converting to polygons and cleaning 0-value polygons...')
         st.pred2polygons(output_mosaic, output_shp)
