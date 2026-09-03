@@ -23,31 +23,65 @@ _LOG_LEVEL_STRINGS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
 formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | Sinkhole_UNet_Inference | %(levelname)s | %(message)s',
                               datefmt='%Y-%m-%dT%H:%M:%S')
 
+# Default Parameters
 VERBOSE = True
 LOG_FILE = None
 LOG_LEVEL = 'INFO'
+TILE_SIZE_X = 256 # Tile size in X direction
+TILE_SIZE_Y = 256 # Tile size in Y direction
+THRESHOLD = 0.5 # Threshold for binary classification
+BATCH_SIZE = 4 # Batch size for inference
+MOSAIC_PATH = None # Output mosaic file path
+SHAPEFILE_PATH = None # Output shapefile path
 log = logging.getLogger('Sinkhole_UNet_Inference')
 log.setLevel(LOG_LEVEL)
 
 DESCRIPTION = """
 Optimized Script for testing a trained U-Net model on large DSM files.
-Uses Windowed Streaming to prevent OOM errors and avoid intermediate tile files.
+Uses Windowed Streaming to prevent OOM errors and avoid.
 """
 
 parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=DESCRIPTION)
 parser.add_argument('-v', help='verbose', action='store_true', default=VERBOSE)
 parser.add_argument('-l', '--log_level', choices=_LOG_LEVEL_STRINGS, default=LOG_LEVEL)
 parser.add_argument('--logfile', default=LOG_FILE)
-parser.add_argument('-tsx', '--tile_size_x', default=256, type=int)
-parser.add_argument('-tsy', '--tile_size_y', default=256, type=int)
-parser.add_argument('-th', '--threshold', default=0.5, type=float)
-parser.add_argument('-b', '--batch_size', default=4, type=int, help='Batch size for inference')
-parser.add_argument('-Om', '--output_mosaic', default=None, help='Output Mosaic File Path')
-parser.add_argument('-Os', '--output_shp', default=None, help='Path to the output shapefile')
+parser.add_argument('-tsx', '--tile_size_x', default=TILE_SIZE_X, type=int)
+parser.add_argument('-tsy', '--tile_size_y', default=TILE_SIZE_Y, type=int)
+parser.add_argument('-th', '--threshold', default=THRESHOLD, type=restricted_float, help='Threshold for binary classification')
+parser.add_argument('-b', '--batch_size', default=BATCH_SIZE, type=int, help='Batch size for inference')
+parser.add_argument('-Om', '--output_mosaic', default=MOSAIC_PATH, help='Output Mosaic File Path')
+parser.add_argument('-Os', '--output_shp', default=SHAPEFILE_PATH, help='Path to the output shapefile')
 parser.add_argument('input_DSM_path', help='Path to the DSM (.ers file)')
 parser.add_argument('Model_Path', help='Path to the trained model')
 
+
+def restricted_float(x):
+    """
+    Check if float is in the range (0.0, 1.0]
+
+    Args:
+    x (str): The float value to check.
+
+    Returns:
+        float: The validated float value.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not a valid float or not in the range (0.0, 1.0]
+    """
+
+    try:
+        x = float(x)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{x!r} is not a valid float")
+    if x <= 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError(f"{x!r} not in range [0.0, 1.0]")
+    return x
+
+    
 def set_logger(log, verbose, log_level, logfile):
+    """
+    Set up the logger with the specified log level and output options.
+    """
     log.setLevel(log_level)
     if verbose:
         ch = logging.StreamHandler(sys.stdout)
@@ -61,7 +95,16 @@ def set_logger(log, verbose, log_level, logfile):
         log.addHandler(fh)
 
 def load_model(checkpoint_path, device):
-    """Load the U-Net model once and return it ready for inference."""
+    """
+    Load the U-Net model from the specified checkpoint path and set it for evaluation.
+
+    Args:
+        checkpoint_path (str): Path to the model checkpoint file.
+        device (torch.device): The device to load the model onto (CPU or GPU).
+
+    Returns:
+        torch.nn.Module: The loaded and evaluated U-Net model.
+    """
     model = build_unet()
     model = model.to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
@@ -70,8 +113,19 @@ def load_model(checkpoint_path, device):
 
 def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4, tile_size=256, threshold=0.5):
     """
-    Windowed streaming inference: reads from disk, predicts, and writes back 
-    in small batches to keep RAM usage strictly below 2GB.
+    Process a raster image using the U-Net model for inference.
+
+    Args:
+        input_dem_path (str): Path to the input DEM file.
+        output_mask_path (str): Path to the output mask file.
+        model (torch.nn.Module): The U-Net model for inference.
+        device (torch.device): The device to run the model on (CPU or GPU).
+        batch_size (int): The number of tiles to process in a batch.
+        tile_size (int): The size of each tile in pixels.
+        threshold (float): The threshold for binary classification.
+
+    Returns:
+        None
     """
     log.info(f"Starting Windowed Inference on {input_dem_path}")
     
