@@ -243,7 +243,7 @@ def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width):
         dst.write(preds_mask[i, :valid_h, :valid_w], 1, window=out_win)
 
 
-def process_raster(input_dem_path, output_mask_path, model, device, batch_size=32, tile_size=256, threshold=0.5):
+def process_raster(input_dem_path, output_mask_path, model, device, batch_size=32, tile_size=256, threshold=0.5, max_elevation=-300, nodata_value=-500):
     """
     Process the input raster in a windowed streaming manner and save the predictions.
 
@@ -300,7 +300,7 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=3
                 
     log.info("Inference complete. Mask saved successfully.")
 
-    
+
 if __name__ == '__main__':
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
