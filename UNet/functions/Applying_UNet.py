@@ -73,6 +73,7 @@ parser.add_argument('-Om', '--output_mosaic', default=MOSAIC_PATH, help='Output 
 parser.add_argument('-Os', '--output_shp', default=SHAPEFILE_PATH, help='Path to the output shapefile')
 parser.add_argument('input_DSM_path', help='Path to the DSM (.ers file)')
 parser.add_argument('Model_Path', help='Path to the trained model')
+parser.add_argument('-m', '--margin', type=int, default=64, help='Margin for center cropping to avoid edge artifacts (default: 64)')
 
     
 def set_logger(log, verbose, log_level, logfile):
@@ -125,7 +126,7 @@ def create_output_profile(src):
     return profile
 
 
-def read_tile(src, window, tile_size, max_elevation=-300, nodata_value=-500):
+def read_tile(src, window, max_elevation=-300, nodata_value=-500):
     """
     Read a tile from the input raster and pad it if necessary.
 
@@ -137,17 +138,12 @@ def read_tile(src, window, tile_size, max_elevation=-300, nodata_value=-500):
     Returns:
         np.ndarray: The padded tile data.
     """
-    tile = src.read(1, window=window)
+    # Read the tile data from the raster and pad the raster
+    tile = src.read(1, window=window, boundless=True, fill_value=nodata_value)
 
     # Use the validation function to skip irrelevant tiles
     if not is_valid_tile(tile, max_elevation, nodata_value):
         return None
-    
-    # Padding for edge tiles in case tile is too small
-    if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
-        padded_tile = np.zeros((tile_size, tile_size), dtype=tile.dtype)
-        padded_tile[:tile.shape[0], :tile.shape[1]] = tile
-        return padded_tile
     
     return tile
 
@@ -220,7 +216,7 @@ def process_batch(model, batch_data, device, threshold):
     return preds_mask
 
 
-def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width):
+def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width, margin):
     """
     Write the predictions to the output raster.
 
@@ -231,6 +227,7 @@ def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width):
         tile_size (int): The size of each tile in pixels.
         height (int): The height of the input raster.
         width (int): The width of the input raster.
+        margin (int): The amount of pixels to cut from each side of the tile.
 
     Returns:
         None
@@ -239,11 +236,13 @@ def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width):
         valid_h = min(tile_size, height - win.row_off)
         valid_w = min(tile_size, width - win.col_off)
 
+        cropped_mask = preds_mask[i, margin:margin+valid_h, margin:margin+valid_w]
+
         out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
-        dst.write(preds_mask[i, :valid_h, :valid_w], 1, window=out_win)
+        dst.write(cropped_mask, 1, window=out_win)
 
 
-def process_raster(input_dem_path, output_mask_path, model, device, batch_size=32, tile_size=256, threshold=0.5, max_elevation=-300, nodata_value=-500):
+def process_raster(input_dem_path, output_mask_path, model, device, batch_size=32, tile_size=256, threshold=0.5, max_elevation=-300, nodata_value=-500, margin=64):
     """
     Process the input raster in a windowed streaming manner and save the predictions.
 
@@ -255,25 +254,32 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=3
         batch_size (int): The number of tiles to process in a batch.
         tile_size (int): The size of each tile in pixels.
         threshold (float): The threshold for binary classification.
+        max_elevation (float): The maximum elevation value for filtering.
+        nodata_value (float): The NoData value for filtering.
+        margin (int): The amount of pixels to cut from each side of the tile.
 
     Returns:
         None
     """
+    # define the step size for moving the window across the raster
+    step_size = tile_size - 2 * margin
+
     with rasterio.open(input_dem_path) as src:
         profile = create_output_profile(src)
         height, width = src.height, src.width
         
         with rasterio.open(output_mask_path, 'w', **profile) as dst:
             batch_windows, batch_data = [], []
-            total_tiles = ((height + tile_size - 1) // tile_size) * ((width + tile_size - 1) // tile_size)
-            
+            total_tiles = ((height + step_size - 1) // step_size) * ((width + step_size - 1) // step_size)
+
             with tqdm.tqdm(total=total_tiles, desc="Predicting Tiles") as pbar:
-                for row_off in range(0, height, tile_size):
-                    for col_off in range(0, width, tile_size):
-                        window = Window(col_off, row_off, tile_size, tile_size)
+                for row_off in range(0, height, step_size):
+                    for col_off in range(0, width, step_size):
+                        # Define a read window that includes the margin for padding
+                        read_window = Window(col_off - margin, row_off - margin, tile_size, tile_size)
                         
                         # Read, Filter, and Pad
-                        tile = read_tile(src, window, tile_size, max_elevation, nodata_value)
+                        tile = read_tile(src, read_window, max_elevation, nodata_value)
                         
                         if tile is None:
                             pbar.update(1)
@@ -282,13 +288,16 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=3
                         # Normalize (ignoring NoData)
                         norm_tile = normalize_tile(tile, nodata_value)
                         
-                        batch_windows.append(window)
+                        # Define a write window that excludes the margin for writing predictions
+                        write_win = Window(col_off, row_off, step_size, step_size)
+                        
+                        batch_windows.append(write_win)
                         batch_data.append(norm_tile)
                         
                         # Process Full Batch
                         if len(batch_data) == batch_size:
                             preds_mask = process_batch(model, batch_data, device, threshold)
-                            write_predictions(dst, batch_windows, preds_mask, tile_size, height, width)
+                            write_predictions(dst, batch_windows, preds_mask, step_size, height, width, margin)
                             batch_windows, batch_data = [], []
                             
                         pbar.update(1)
@@ -296,8 +305,8 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=3
             # Process Remaining Tiles in the last batch
             if len(batch_data) > 0:
                 preds_mask = process_batch(model, batch_data, device, threshold)
-                write_predictions(dst, batch_windows, preds_mask, tile_size, height, width)
-                
+                write_predictions(dst, batch_windows, preds_mask, step_size, height, width, margin)
+
     log.info("Inference complete. Mask saved successfully.")
 
 
@@ -331,7 +340,8 @@ if __name__ == '__main__':
         device=device, 
         batch_size=args.batch_size, 
         tile_size=args.tile_size, 
-        threshold=args.threshold
+        threshold=args.threshold,
+        margin=args.margin
     )
 
 
