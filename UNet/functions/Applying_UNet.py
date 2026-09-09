@@ -48,7 +48,6 @@ def restricted_float(x):
     Raises:
         argparse.ArgumentTypeError: If the value is not a valid float or not in the range (0.0, 1.0]
     """
-
     try:
         x = float(x)
     except ValueError:
@@ -92,6 +91,7 @@ def set_logger(log, verbose, log_level, logfile):
         fh.setFormatter(formatter)
         log.addHandler(fh)
 
+
 def load_model(checkpoint_path, device):
     """
     Load the U-Net model from the specified checkpoint path and set it for evaluation.
@@ -109,13 +109,147 @@ def load_model(checkpoint_path, device):
     model.eval() # set model to evaluation mode
     return model
 
-def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4, tile_size=256, threshold=0.5):
+
+def create_output_profile(src):
     """
-    Process a raster image using the U-Net model for inference.
+    Create an output profile for the output raster.
 
     Args:
-        input_dem_path (str): Path to the input DEM file.
-        output_mask_path (str): Path to the output mask file.
+        src (rasterio.DatasetReader): The input raster dataset.
+
+    Returns:
+        dict: The updated profile for the output raster.
+    """
+    profile = src.profile
+    profile.update(dtype=rasterio.uint8, count=1, compress='lzw', nodata=0, driver='GTiff')
+    return profile
+
+
+def read_tile(src, window, tile_size, max_elevation=-300, nodata_value=-500):
+    """
+    Read a tile from the input raster and pad it if necessary.
+
+    Args:
+        src (rasterio.DatasetReader): The input raster dataset.
+        window (rasterio.windows.Window): The window defining the tile to read.
+        tile_size (int): The size of the tile in pixels.
+
+    Returns:
+        np.ndarray: The padded tile data.
+    """
+    tile = src.read(1, window=window)
+
+    # Use the validation function to skip irrelevant tiles
+    if not is_valid_tile(tile, max_elevation, nodata_value):
+        return None
+    
+    # Padding for edge tiles in case tile is too small
+    if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
+        padded_tile = np.zeros((tile_size, tile_size), dtype=tile.dtype)
+        padded_tile[:tile.shape[0], :tile.shape[1]] = tile
+        return padded_tile
+    
+    return tile
+
+
+def is_valid_tile(tile, max_elevation=-300, nodata_value=-500):
+    """
+    Check if a tile is valid based on its elevation values.
+
+    Args:
+        tile (np.ndarray): The tile data to check.
+        max_elevation (float): The maximum elevation value to consider the tile valid.
+        nodata_value (float): The NoData value to ignore in the tile.
+
+    Returns:
+        bool: True if the tile is valid, False otherwise.
+    """
+    # Filter out NoData values
+    valid_pixels = tile[tile > nodata_value]
+
+    # filter out high altitude pixels
+    if valid_pixels.size == 0 or np.min(valid_pixels) > max_elevation:
+        return False
+
+    return True
+
+
+def normalize_tile(tile, nodata_value=-500):
+    """
+    Normalize a tile to the range [0, 1].
+
+    Args:
+        tile (np.ndarray): The tile data to normalize.
+
+    Returns:
+        np.ndarray: The normalized tile data.
+    """
+    valid_mask = tile > nodata_value
+    norm_tile = np.zeros_like(tile, dtype=np.float32)
+    valid_pixels = tile[valid_mask]
+    
+    if valid_pixels.size > 0:
+        tile_min, tile_max = valid_pixels.min(), valid_pixels.max()
+        if tile_max - tile_min > 0:
+            norm_tile[valid_mask] = (tile[valid_mask] - tile_min) / (tile_max - tile_min)
+            
+    return norm_tile
+
+
+def process_batch(model, batch_data, device, threshold):
+    """
+    Process a batch of tiles through the U-Net model.
+
+    Args:
+        model (torch.nn.Module): The U-Net model for inference.
+        batch_data (list): List of normalized tile data.
+        device (torch.device): The device to run the model on (CPU or GPU).
+        threshold (float): The threshold for binary classification.
+
+    Returns:
+        np.ndarray: The predicted masks for the batch of tiles.
+    """
+    tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
+
+    with torch.no_grad():
+        preds = model(tensor_batch)
+        preds = torch.sigmoid(preds)
+        preds = preds.cpu().numpy().squeeze(1)
+
+    preds_mask = np.where(preds >= threshold, 1, 0).astype(np.uint8)
+    return preds_mask
+
+
+def write_predictions(dst, batch_windows, preds_mask, tile_size, height, width):
+    """
+    Write the predictions to the output raster.
+
+    Args:
+        dst (rasterio.DatasetWriter): The output raster dataset.
+        batch_windows (list): List of windows corresponding to the batch of tiles.
+        preds_mask (np.ndarray): The predicted masks.
+        tile_size (int): The size of each tile in pixels.
+        height (int): The height of the input raster.
+        width (int): The width of the input raster.
+
+    Returns:
+        None
+    """
+    for i, win in enumerate(batch_windows):
+        valid_h = min(tile_size, height - win.row_off)
+        valid_w = min(tile_size, width - win.col_off)
+
+        out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
+        dst.write(preds_mask[i, :valid_h, :valid_w], 1, window=out_win)
+
+
+def process_raster(input_dem_path, output_mask_path, model, device, batch_size=32, tile_size=256, threshold=0.5):
+    """
+    Process the input raster in a windowed streaming manner and save the predictions.
+
+    Args:
+        input_dem_path (str): Path to the input DSM raster.
+        output_mask_path (str): Path to save the output mask raster.
         model (torch.nn.Module): The U-Net model for inference.
         device (torch.device): The device to run the model on (CPU or GPU).
         batch_size (int): The number of tiles to process in a batch.
@@ -125,104 +259,48 @@ def process_raster(input_dem_path, output_mask_path, model, device, batch_size=4
     Returns:
         None
     """
-    log.info(f"Starting Windowed Inference on {input_dem_path}")
-    
-    # Open the input DEM file
     with rasterio.open(input_dem_path) as src:
-        profile = src.profile
-        profile.update(dtype=rasterio.uint8, count=1, compress='lzw', nodata=0, driver='GTiff')
+        profile = create_output_profile(src)
+        height, width = src.height, src.width
         
-        # Create the output mask file with the updated profile
         with rasterio.open(output_mask_path, 'w', **profile) as dst:
-            height, width = src.height, src.width
-            
-            # Initialize lists to hold the windows and corresponding data
             batch_windows, batch_data = [], []
-            
-            # Calculate the total number of tiles for progress tracking
             total_tiles = ((height + tile_size - 1) // tile_size) * ((width + tile_size - 1) // tile_size)
             
-            # Create a progress tracking bar
             with tqdm.tqdm(total=total_tiles, desc="Predicting Tiles") as pbar:
-                # Iterate over the raster in tiles
                 for row_off in range(0, height, tile_size):
                     for col_off in range(0, width, tile_size):
-                        
-                        # Define the window for the current tile and read the data
                         window = Window(col_off, row_off, tile_size, tile_size)
-                        tile = src.read(1, window=window)
                         
-                        # Skip tiles with NoData values completely
-                        if np.min(tile) < -500:
+                        # Read, Filter, and Pad
+                        tile = read_tile(src, window, tile_size, max_elevation, nodata_value)
+                        
+                        if tile is None:
                             pbar.update(1)
                             continue
                             
-                        # Padding for edge tiles in case tile is too small
-                        if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
-                            padded_tile = np.zeros((tile_size, tile_size), dtype=tile.dtype)
-                            padded_tile[:tile.shape[0], :tile.shape[1]] = tile
-                            tile = padded_tile
-                            
-                        # Normalization
-                        tile_min, tile_max = tile.min(), tile.max()
-                        if tile_max - tile_min == 0:
-                            norm_tile = np.zeros_like(tile, dtype=np.float32)
-                        else:
-                            norm_tile = (tile - tile_min) / (tile_max - tile_min)
+                        # Normalize (ignoring NoData)
+                        norm_tile = normalize_tile(tile, nodata_value)
                         
-                        # Append the current window and normalized tile to the batch lists
                         batch_windows.append(window)
                         batch_data.append(norm_tile)
                         
-                        # Process batch
+                        # Process Full Batch
                         if len(batch_data) == batch_size:
-                            tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
-
-                            # Perform inference without tracking gradients  
-                            with torch.no_grad():
-                                preds = model(tensor_batch)
-                                preds = torch.sigmoid(preds)
-                                preds = preds.cpu().numpy().squeeze(1)
-
-                                # Write predictions to the output raster    
-                                for i, win in enumerate(batch_windows):
-                                    valid_h = min(tile_size, height - win.row_off)
-                                    valid_w = min(tile_size, width - win.col_off)
-                                    
-                                    # Apply threshold to get binary mask
-                                    prob_mask = preds[i, :valid_h, :valid_w]
-                                    pred_mask = np.where(prob_mask >= threshold, 1, 0).astype(np.uint8)
-                                    
-                                    # Write the binary mask to the output raster
-                                    out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
-                                    dst.write(pred_mask, 1, window=out_win)
-
-                                # Reset batch lists for the next set of tiles    
-                                batch_windows, batch_data = [], []
+                            preds_mask = process_batch(model, batch_data, device, threshold)
+                            write_predictions(dst, batch_windows, preds_mask, tile_size, height, width)
+                            batch_windows, batch_data = [], []
+                            
                         pbar.update(1)
-
-                # Process any remaining tiles in the batch after the loop
-                if len(batch_data) > 0:
-                    tensor_batch = torch.tensor(np.array(batch_data), dtype=torch.float32).unsqueeze(1).to(device)
-                    
-                    with torch.no_grad():
-                        preds = model(tensor_batch)
-                        preds = torch.sigmoid(preds)
-                        preds = preds.cpu().numpy().squeeze(1)
                         
-                    for i, win in enumerate(batch_windows):
-                        valid_h = min(tile_size, height - win.row_off)
-                        valid_w = min(tile_size, width - win.col_off)
-                        
-                        prob_mask = preds[i, :valid_h, :valid_w]
-                        pred_mask = np.where(prob_mask >= threshold, 1, 0).astype(np.uint8)
+            # Process Remaining Tiles in the last batch
+            if len(batch_data) > 0:
+                preds_mask = process_batch(model, batch_data, device, threshold)
+                write_predictions(dst, batch_windows, preds_mask, tile_size, height, width)
+                
+    log.info("Inference complete. Mask saved successfully.")
 
-                        out_win = Window(win.col_off, win.row_off, valid_w, valid_h)
-                        dst.write(pred_mask, 1, window=out_win)
-
-                    batch_windows, batch_data = [], []
-
-
+    
 if __name__ == '__main__':
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
