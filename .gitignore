@@ -7,6 +7,10 @@ __pycache__/
 *.tif
 *.ers
 *.dem
+*.xlsx
+*.xls
+*.csv
+*.html
 DATA/
 data/
 
